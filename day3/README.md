@@ -26,9 +26,19 @@ pip install legoeducation opencv-python
 
 1. `python generate_apriltag.py`, print the PNG at 100% scale, tape it to the
    tower facing the camera. Keep the white margin — the detector needs it.
-2. Turn on the Double Motor drive base.
-3. `python apriltag_car.py` — uses the built-in camera (`CAMERA_INDEX = 0`).
-   Use `--no-robot` to test the vision/controller with no car connected.
+2. Turn on the Double Motor drive base. The script connects to our LEGO
+   connection card (orange, serial 1142) — set `CARD_COLOR` and `CARD_SERIAL`
+   to `None` at the top of `apriltag_car.py` to connect to any Double Motor.
+3. `python apriltag_car.py` — scans camera devices starting at
+   `CAMERA_INDEX = 0` and uses the first one that actually delivers frames
+   (it prints which). Force a specific device with `--camera N`, or a phone
+   WiFi stream with `--url http://PHONE_IP:8080/video`. Use `--no-robot` to
+   test the vision/controller with no car connected (still needs
+   `legoeducation` installed, since the card constants come from it).
+
+If the script exits without ever showing a window, no camera delivered
+frames: allow your terminal app in System Settings → Privacy & Security →
+Camera and restart the terminal.
 
 Keys in the video window: **s** toggles spring mode, **q**/Esc quits (motors
 stop on exit). If the car drives *away* from center, flip the `DIRECTION`
