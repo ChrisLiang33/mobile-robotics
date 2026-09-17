@@ -44,8 +44,6 @@ import time
 
 import cv2
 
-from camlib import pick_camera
-
 # --- Bluetooth card info (same pattern as Day 2) ---------------------------
 # None = connect to the first advertising Double Motor found.
 CARD_COLOR = None
@@ -53,6 +51,7 @@ CARD_SERIAL = None
 
 # --- Vision ----------------------------------------------------------------
 TAG_DICT = cv2.aruco.DICT_APRILTAG_36h11
+CAMERA_INDEX = 0      # 0 = built-in FaceTime camera
 FRAME_W, FRAME_H = 1280, 720
 
 # --- Controller gains ------------------------------------------------------
@@ -154,7 +153,19 @@ def main():
     dictionary = cv2.aruco.getPredefinedDictionary(TAG_DICT)
     detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
 
-    cap, _ = pick_camera(width=FRAME_W, height=FRAME_H)
+    # Open the built-in camera. AVFoundation first (avoids the macOS issue
+    # where cap.read() returns empty frames), then the default backend.
+    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_AVFOUNDATION)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        raise RuntimeError(
+            "Could not open the camera. "
+            "Check System Settings -> Privacy & Security -> Camera."
+        )
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+    time.sleep(0.5)  # let the sensor warm up so the first frames aren't black
 
     spring = False
     prev_err = None

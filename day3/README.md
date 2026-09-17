@@ -14,7 +14,7 @@ the tag and prints the **centroid coordinates** next to it.
 | `apriltag_car.py` | Main program: camera + detection + PD controller + motor commands |
 | `generate_apriltag.py` | Makes the printable tag PNG (`tag36h11_id0.png`) |
 | `tag36h11_id0.png` | The tag — print at 100% scale (70 mm) and tape it to the car's tower |
-| `camlib.py`, `lelib.py` | Course helper libraries (camera picker, LEGO wrappers) copied from the class repo |
+| `lelib.py` | Course LEGO wrapper library copied from the class repo |
 
 ## Setup
 
@@ -27,8 +27,8 @@ pip install legoeducation opencv-python
 1. `python generate_apriltag.py`, print the PNG at 100% scale, tape it to the
    tower facing the camera. Keep the white margin — the detector needs it.
 2. Turn on the Double Motor drive base.
-3. `python apriltag_car.py` — pick your camera when prompted. Use
-   `--no-robot` to test the vision/controller with no car connected.
+3. `python apriltag_car.py` — uses the built-in camera (`CAMERA_INDEX = 0`).
+   Use `--no-robot` to test the vision/controller with no car connected.
 
 Keys in the video window: **s** toggles spring mode, **q**/Esc quits (motors
 stop on exit). If the car drives *away* from center, flip the `DIRECTION`
