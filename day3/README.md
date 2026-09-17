@@ -35,6 +35,28 @@ stop on exit). If the car drives *away* from center, flip the `DIRECTION`
 constant at the top of `apriltag_car.py`; wheel-motor mounting is handled by
 `LEFT_SIGN` / `RIGHT_SIGN`.
 
+## The opposite setup: camera on the robot, stationary tag
+
+The same program also runs the inverted demo — a smartphone camera mounted
+**on the robot** streams its view back to the computer, which drives the car
+until a **stationary** AprilTag (taped up next to the computer) is centered in
+the phone's image:
+
+- **iPhone (easiest):** mount the phone on the robot and use Continuity
+  Camera — macOS shows the iPhone as just another camera device, streamed
+  wirelessly. Run `python apriltag_car.py --camera 1` (try 0/1/2 to find the
+  phone's index; the script prints which device it's using).
+- **Any phone over WiFi:** run an IP-webcam app on the phone and pass its
+  stream: `python apriltag_car.py --url http://PHONE_IP:8080/video`.
+
+Nothing about the policy changes — it's still the same PD controller centering
+the same horizontal pixel error. The only difference is the sign of the
+feedback loop: driving the car now moves the *camera* instead of the tag, so
+the tag slides the opposite way across the image. If the car runs away from
+the tag instead of centering it, flip `DIRECTION`. Expect to lower the gains a
+bit too: a wireless video stream adds ~100–300 ms of latency, which eats phase
+margin — too much `Kp` with that delay and even "damped" mode will oscillate.
+
 ## Q1 — Describe the controller (policy): how does it determine motor speed?
 
 It's a **PD controller on the tag's horizontal pixel position**, evaluated once

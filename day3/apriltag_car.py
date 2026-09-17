@@ -15,6 +15,19 @@ the pixel error, and the commanded speed.
 Run:
     python apriltag_car.py              # full demo (connects to the car)
     python apriltag_car.py --no-robot   # vision + controller only, no BLE
+    python apriltag_car.py --camera 1   # use a specific camera device (e.g.
+                                        # an iPhone on the robot via
+                                        # Continuity Camera) instead of
+                                        # auto-scanning from CAMERA_INDEX
+    python apriltag_car.py --url http://PHONE_IP:8080/video
+                                        # phone camera streamed over WiFi by
+                                        # an IP-webcam app
+
+The OPPOSITE setup works with the exact same controller: mount the phone
+camera on the robot (--camera or --url) and tape the AprilTag somewhere
+stationary by the computer. Now driving the car moves the camera instead
+of the tag, so the tag slides the other way across the image -- if the
+car runs away from the tag instead of centering it, flip DIRECTION.
 
 Keys (with the video window focused):
     s        toggle SPRING mode (high Kp, zero Kd -> overshoots and
@@ -129,15 +142,35 @@ class Car:
             self.dm.disconnect()
 
 
-def open_camera():
+def open_camera(index=None, url=None):
     """Open the first camera that actually delivers frames.
 
     "Opened" is not enough on macOS: a Continuity Camera (iPhone) that isn't
     streaming, or a terminal without camera permission, opens fine but every
     read fails -- so each candidate must prove itself with a real frame.
-    Tries CAMERA_INDEX first, then the other low indices.
+
+    url:   network stream (phone IP-webcam app) -- used exclusively if given.
+    index: exact camera device to use (e.g. an iPhone via Continuity Camera).
+    Neither: tries CAMERA_INDEX first, then the other low indices.
     """
-    indices = [CAMERA_INDEX] + [i for i in range(4) if i != CAMERA_INDEX]
+    if url is not None:
+        cap = cv2.VideoCapture(url)
+        for _ in range(100):  # network streams can take a few seconds
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                print(f"Using stream {url}")
+                return cap
+            time.sleep(0.05)
+        cap.release()
+        raise RuntimeError(
+            f"No frames from {url}. Check the phone app is streaming and "
+            "both devices are on the same WiFi."
+        )
+
+    if index is not None:
+        indices = [index]
+    else:
+        indices = [CAMERA_INDEX] + [i for i in range(4) if i != CAMERA_INDEX]
     for idx in indices:
         cap = cv2.VideoCapture(idx, cv2.CAP_AVFOUNDATION)
         if not cap.isOpened():
@@ -180,6 +213,12 @@ def main():
     ap = argparse.ArgumentParser(description="AprilTag center-seeking car")
     ap.add_argument("--no-robot", action="store_true",
                     help="run vision + controller without connecting to the car")
+    ap.add_argument("--camera", type=int, default=None,
+                    help="camera device index (e.g. an iPhone on the robot "
+                         "via Continuity Camera); default: scan from CAMERA_INDEX")
+    ap.add_argument("--url", type=str, default=None,
+                    help="network video stream, e.g. http://PHONE_IP:8080/video "
+                         "from an IP-webcam phone app")
     args = ap.parse_args()
 
     car = Car(enabled=not args.no_robot)
@@ -188,7 +227,7 @@ def main():
     dictionary = cv2.aruco.getPredefinedDictionary(TAG_DICT)
     detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
 
-    cap = open_camera()
+    cap = open_camera(index=args.camera, url=args.url)
 
     spring = False
     prev_err = None
