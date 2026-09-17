@@ -128,6 +128,40 @@ class Car:
             self.dm.disconnect()
 
 
+def open_camera():
+    """Open the first camera that actually delivers frames.
+
+    "Opened" is not enough on macOS: a Continuity Camera (iPhone) that isn't
+    streaming, or a terminal without camera permission, opens fine but every
+    read fails -- so each candidate must prove itself with a real frame.
+    Tries CAMERA_INDEX first, then the other low indices.
+    """
+    indices = [CAMERA_INDEX] + [i for i in range(4) if i != CAMERA_INDEX]
+    for idx in indices:
+        cap = cv2.VideoCapture(idx, cv2.CAP_AVFOUNDATION)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(idx)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+        for _ in range(40):  # up to ~2 s of sensor warm-up
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                print(f"Using camera {idx}")
+                return cap
+            time.sleep(0.05)
+        print(f"Camera {idx} opened but produced no frames, trying next...")
+        cap.release()
+    raise RuntimeError(
+        "No camera delivered any frames. Check System Settings -> Privacy & "
+        "Security -> Camera and allow your terminal app (then restart it), "
+        "or set CAMERA_INDEX at the top of this file."
+    )
+
+
 def largest_tag(corners):
     """Return (index, centroid, corner array) of the biggest detected tag,
     so a stray second tag in the background can't steal the controller."""
@@ -153,19 +187,7 @@ def main():
     dictionary = cv2.aruco.getPredefinedDictionary(TAG_DICT)
     detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
 
-    # Open the built-in camera. AVFoundation first (avoids the macOS issue
-    # where cap.read() returns empty frames), then the default backend.
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_AVFOUNDATION)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        raise RuntimeError(
-            "Could not open the camera. "
-            "Check System Settings -> Privacy & Security -> Camera."
-        )
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-    time.sleep(0.5)  # let the sensor warm up so the first frames aren't black
+    cap = open_camera()
 
     spring = False
     prev_err = None
@@ -175,10 +197,18 @@ def main():
     last_cmd = 0.0
 
     try:
+        bad_reads = 0
         while cap.isOpened():
             ret, frame = cap.read()
-            if not ret:
-                break
+            if not ret or frame is None:
+                bad_reads += 1
+                if bad_reads > 30:      # ~1 s of dead air = camera is gone
+                    print("Camera stopped delivering frames -- exiting.")
+                    break
+                car.stop()               # don't keep driving blind
+                time.sleep(0.03)
+                continue
+            bad_reads = 0
             now = time.monotonic()
             h, w = frame.shape[:2]
             half_w = w / 2.0
