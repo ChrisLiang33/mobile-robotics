@@ -41,13 +41,14 @@ seen again. Motors are also stopped in a finally-block on quit or crash.
 
 import argparse
 import time
+import legoeducation as le
 
 import cv2
 
 # --- Bluetooth card info (same pattern as Day 2) ---------------------------
 # None = connect to the first advertising Double Motor found.
-CARD_COLOR = None
-CARD_SERIAL = None
+CARD_COLOR = le.LEGO_COLOR_ORANGE
+CARD_SERIAL = 1142
 
 # --- Vision ----------------------------------------------------------------
 TAG_DICT = cv2.aruco.DICT_APRILTAG_36h11
