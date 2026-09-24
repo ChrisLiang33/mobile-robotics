@@ -44,10 +44,11 @@ Whistle commands (hold the whistle until the car reacts, ~0.15 s):
 
 | Whistle pitch | Band | Command |
 |---|---|---|
-| Low (500–900 Hz) | red | **STOP**; whistle low *again* while stopped → **REVERSE** (backs up while held) |
+| Low (500–900 Hz) | red | **STOP** (instant) |
 | Mid-low (900–1400 Hz) | blue | **turn LEFT** (while held) |
 | Mid-high (1400–2000 Hz) | green | **turn RIGHT** (while held) |
-| High (2000–3500 Hz) | orange | **SPEED UP** (accelerates while held) |
+| High (2000–2700 Hz) | orange | **FORWARD** — dead-man: moves only while whistling, ramping up the longer you hold |
+| Top (2700–3500 Hz) | purple | **REVERSE** — dead-man, backs up while whistling; parked at the top of the spectrum, farthest from background noise |
 
 The spectrum plot shows exactly which band your whistle lands in — if your
 "low" whistle reads as mid, just adjust the `BANDS` table to your own
@@ -65,14 +66,14 @@ pipeline:
 3. **Classify** the surviving pitch into one of four bands → STOP / LEFT /
    RIGHT / FASTER.
 4. **Integrate into car state.** The policy keeps two state variables:
-   `speed` and `turn`. FASTER adds 4% per chunk while held (so a long high
-   whistle accelerates smoothly toward 80%); STOP zeroes the speed — and a
-   *second* low whistle starting while the car is already stopped drives it in
-   reverse (down to −40%) for as long as it's held, so low-low is the back-up
-   sequence; LEFT/RIGHT
-   set a steering offset that lasts only while the whistle is held. Wheel
-   commands are `left = speed + turn·25`, `right = speed − turn·25` — a moving
-   car arcs, a stopped car spins in place.
+   `speed` and `turn`. The throttle is a **dead-man switch**: FORWARD jumps to
+   15% the instant the whistle registers (so static friction can't hold the
+   car) and ramps 4% per chunk toward 80% while held; REVERSE does the same
+   backwards (−18% kick, capped at −40%); STOP zeroes the speed instantly;
+   LEFT/RIGHT set a steering offset. All of it lasts only while a whistle is
+   actually sounding. Wheel commands are `left = speed ± turn·25`,
+   `right = speed ∓ turn·25` — a moving car arcs, a stopped car spins in
+   place.
 5. A control thread sends the wheel speeds to the two motors over BLE at
    20 Hz (skipping sends when nothing changed).
 
@@ -82,16 +83,15 @@ car's state, not a signal the car proportionally tracks.
 
 ## Q2 — What does your code do if no whistle is detected?
 
-Silence is *not* a command — the car keeps doing whatever it was last told,
-which is what makes "whistle high for a bit, then let it cruise" work. Three
-exceptions keep that safe:
-
-1. **Turns end immediately**: steering is only applied while a mid whistle is
-   actually sounding, so letting go straightens the car out.
-2. **Fail-safe timeout**: after 10 s with no valid whistle at all, a moving
-   car stops on its own.
-3. In the World Cup, the car is also forced to zero before "start" arrives
-   and after the game ends.
+It stops. The throttle is a dead-man switch: no whistle means no motion, so
+the moment you stop whistling (or someone else's noise stops passing the
+gates), the car coasts for a 0.3 s grace window — just long enough that a
+single garbled FFT chunk mid-whistle doesn't stutter it — and then the speed
+is zeroed and both motors stop. Steering releases the same way: turns are
+only applied while a mid-band whistle is actually sounding. In the World Cup
+the car is additionally forced to zero before "start" arrives and after the
+game ends. This is the safest possible default for a crowded, noisy game
+room: an uncontrolled car is a stationary car.
 
 ## Q3 — How did you try to mask out unwanted noise?
 

@@ -13,9 +13,9 @@ command streams onto one car -- A's whistles own the throttle
 
     python mqtt_driver.py --throttle ME193/chris/cmd --steer ME193/tasha/cmd
 
-Same fail-safes as whistle_car: silence on a topic keeps its last
-command, 10 s of silence on the throttle topic stops the car, and
-closing the window stops the motors.
+Same dead-man behavior as whistle_car: the car only moves while the
+throttle person is actually whistling, and stops when both topics go
+quiet. Ctrl-C stops the motors.
 """
 
 import argparse
@@ -40,18 +40,16 @@ def main():
 
     policy = wc.Policy()
 
+    # Publishers only send decision CHANGES, but the policy's dead-man
+    # throttle needs a continuous feed -- so remember the latest payload
+    # per topic and re-apply it every control tick.
+    latest = {"throttle": "NONE", "steer": "NONE"}
+
     def on_throttle(topic, payload):
-        if payload in ("FASTER", "STOP"):
-            policy.update(payload)
-        elif payload == "NONE":
-            policy.update(None)
+        latest["throttle"] = payload
 
     def on_steer(topic, payload):
-        if payload in ("LEFT", "RIGHT"):
-            policy.update(payload)
-        elif payload == "NONE":
-            with policy.lock:
-                policy.turn = 0
+        latest["steer"] = payload
 
     mqtt = MQTTClient()
     mqtt.connect()
@@ -63,6 +61,13 @@ def main():
 
     def control_loop():
         while running[0]:
+            th, st = latest["throttle"], latest["steer"]
+            if th in ("FASTER", "STOP", "REVERSE"):
+                policy.update(th)
+            if st in ("LEFT", "RIGHT"):
+                policy.update(st)
+            if th not in ("FASTER", "STOP", "REVERSE") and st not in ("LEFT", "RIGHT"):
+                policy.update(None)        # both silent -> dead-man stop
             l, r, speed, turn, last = policy.wheels()
             car.drive(l, r)
             time.sleep(1.0 / wc.CMD_HZ)

@@ -5,11 +5,14 @@ The microphone stream is chopped into ~46 ms chunks; each chunk is FFT'd
 and the dominant pitch inside the whistle band (500-3500 Hz) is
 classified into one of four commands:
 
-    LOW      500- 900 Hz   STOP; a second low whistle while stopped
-                           REVERSES (backs up while held)
+    LOW      500- 900 Hz   STOP (instant)
     MID-LOW  900-1400 Hz   TURN LEFT  (while the whistle is held)
     MID-HIGH 1400-2000 Hz  TURN RIGHT (while the whistle is held)
-    HIGH    2000-3500 Hz   SPEED UP   (accelerates while held)
+    HIGH    2000-2700 Hz   FORWARD    (dead-man: only while whistling,
+                           speed ramps up the longer it's held)
+    TOP     2700-3500 Hz   REVERSE    (dead-man, same idea backwards --
+                           parked at the top of the spectrum, farthest
+                           from background noise and other whistlers)
 
 A live matplotlib window shows the raw waveform, the spectrum with the
 command bands shaded, the detection threshold, the detected peak, and
@@ -25,10 +28,10 @@ Noise masking (three layers, see README):
   3. persistence: the same band must win HOLD_FRAMES chunks in a row
      (~140 ms) before the command fires
 
-If no whistle is detected the car keeps doing whatever it was told last
-(a whistle is an instruction, not a heartbeat) -- but after
-NO_WHISTLE_TIMEOUT seconds of silence it glides to a stop as a fail-safe,
-and a low whistle or the q key always stops it immediately.
+The throttle is a DEAD-MAN switch: the car only moves while a whistle
+is actually sounding. Stop whistling and it stops within RELEASE_GRACE_S
+(a short grace so one blurry FFT chunk mid-whistle doesn't stutter it).
+A low whistle is still the instant stop.
 
 Run:
     python whistle_car.py               # drive the car
@@ -56,7 +59,8 @@ BANDS = [
     ("STOP",  500,  900),
     ("LEFT",  900, 1400),
     ("RIGHT", 1400, 2000),
-    ("FASTER", 2000, 3500),
+    ("FASTER", 2000, 2700),
+    ("REVERSE", 2700, 3500),
 ]
 BAND_LO, BAND_HI = 500.0, 3500.0
 
@@ -68,18 +72,19 @@ HOLD_FRAMES = 3               # consecutive agreeing chunks before acting
 # --- Driving ---------------------------------------------------------------
 MAX_SPEED = 80                # percent
 MAX_REVERSE = 40              # reverse speed cap (percent)
-ACCEL_STEP = 4                # speed added per HIGH-whistle chunk (~21/s)
-REVERSE_STEP = 3              # reverse speed added per LOW-whistle chunk
-REVERSE_KICK = 18             # instant reverse speed, so friction can't hold it
-REVERSE_ARM_S = 3.0           # a 2nd low whistle within this window = reverse
+ACCEL_STEP = 4                # speed added per FORWARD-whistle chunk (~21/s)
+REVERSE_STEP = 3              # reverse speed added per REVERSE-whistle chunk
+FORWARD_KICK = 15             # instant speed on whistle start (beats friction)
+REVERSE_KICK = 18
 TURN_SPEED = 25               # wheel differential while turning
-NO_WHISTLE_TIMEOUT = 10.0     # s of silence before the fail-safe stop
+RELEASE_GRACE_S = 0.3         # whistle gone this long -> dead-man stop
 CMD_HZ = 20                   # motor command rate
 
 # --- Bluetooth card (same pattern as Day 3) --------------------------------
 CARD_COLOR_NAME = "ORANGE"    # None = first Double Motor found
 CARD_SERIAL = 7572
 LEFT_SIGN, RIGHT_SIGN = +1, -1  # motors are mounted mirror-image
+TURN_SIGN = -1                  # -1: chassis turned opposite the labels in testing
 
 
 class WhistleDetector:
@@ -176,52 +181,39 @@ class Policy:
         self.turn = 0            # -1 left, 0 straight, +1 right
         self.last_decision = "-"
         self.last_heard = time.monotonic()
-        self._stop_action = None   # what THIS low-whistle event does: 'stop'|'reverse'
-        self._rev_armed_until = 0.0  # a low whistle arms reverse for the next one
 
     def update(self, decision):
         now = time.monotonic()
         with self.lock:
             if decision == "STOP":
-                # Sequence: one low whistle always stops (and arms reverse
-                # for REVERSE_ARM_S); a second low whistle starting within
-                # that window, with the car stopped, backs it up while held.
-                if self._stop_action is None:      # first chunk of this whistle
-                    if self.speed == 0 and now < self._rev_armed_until:
-                        self._stop_action = "reverse"
-                        self._rev_armed_until = 0.0
-                    else:
-                        self._stop_action = "stop"
-                        self._rev_armed_until = now + REVERSE_ARM_S
-                if self._stop_action == "stop":
-                    self.speed = 0.0
-                elif self.speed == 0:
-                    self.speed = -REVERSE_KICK   # jump past static friction
-                else:
-                    self.speed = max(-MAX_REVERSE, self.speed - REVERSE_STEP)
+                self.speed = 0.0
                 self.turn = 0
             elif decision == "FASTER":
-                self.speed = min(MAX_SPEED, self.speed + ACCEL_STEP)
+                # Dead-man throttle: moves only while the whistle sounds.
+                # Kick past static friction, then ramp toward MAX_SPEED.
+                self.speed = FORWARD_KICK if self.speed <= 0 else \
+                    min(MAX_SPEED, self.speed + ACCEL_STEP)
+                self.turn = 0
+            elif decision == "REVERSE":
+                self.speed = -REVERSE_KICK if self.speed >= 0 else \
+                    max(-MAX_REVERSE, self.speed - REVERSE_STEP)
                 self.turn = 0
             elif decision == "LEFT":
                 self.turn = -1
             elif decision == "RIGHT":
                 self.turn = +1
             else:                          # no whistle this chunk
-                self._stop_action = None   # the low-whistle event has ended
                 self.turn = 0              # turns only last while whistling
-                if now - self.last_heard > NO_WHISTLE_TIMEOUT and self.speed != 0:
-                    self.speed = 0.0       # fail-safe: long silence = stop
+                if now - self.last_heard > RELEASE_GRACE_S:
+                    self.speed = 0.0       # dead-man: silence = stop
                 return
-            if decision != "STOP":
-                self._stop_action = None
             self.last_decision = decision
             self.last_heard = now
 
     def wheels(self):
         with self.lock:
-            l = self.speed + self.turn * TURN_SPEED
-            r = self.speed - self.turn * TURN_SPEED
+            l = self.speed + TURN_SIGN * self.turn * TURN_SPEED
+            r = self.speed - TURN_SIGN * self.turn * TURN_SPEED
             return l, r, self.speed, self.turn, self.last_decision
 
 
@@ -271,7 +263,8 @@ def run_ui(policy, viz_q, status_fn=None, on_close=None):
     spec_line, = ax_s.plot(freqs[fmask], np.zeros(fmask.sum()), linewidth=1.0)
     peak_dot, = ax_s.plot([], [], "ro", markersize=8)
     band_colors = {"STOP": "#d62728", "LEFT": "#1f77b4",
-                   "RIGHT": "#2ca02c", "FASTER": "#ff7f0e"}
+                   "RIGHT": "#2ca02c", "FASTER": "#ff7f0e",
+                   "REVERSE": "#9467bd"}
     for name, lo, hi in BANDS:
         ax_s.axvspan(lo, hi, alpha=0.12, color=band_colors[name])
         ax_s.text((lo + hi) / 2, 0.93, name, transform=ax_s.get_xaxis_transform(),
