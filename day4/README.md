@@ -44,7 +44,7 @@ Whistle commands (hold the whistle until the car reacts, ~0.15 s):
 
 | Whistle pitch | Band | Command |
 |---|---|---|
-| Low (500–900 Hz) | red | **STOP** |
+| Low (500–900 Hz) | red | **STOP**; whistle low *again* while stopped → **REVERSE** (backs up while held) |
 | Mid-low (900–1400 Hz) | blue | **turn LEFT** (while held) |
 | Mid-high (1400–2000 Hz) | green | **turn RIGHT** (while held) |
 | High (2000–3500 Hz) | orange | **SPEED UP** (accelerates while held) |
@@ -66,7 +66,10 @@ pipeline:
    RIGHT / FASTER.
 4. **Integrate into car state.** The policy keeps two state variables:
    `speed` and `turn`. FASTER adds 4% per chunk while held (so a long high
-   whistle accelerates smoothly toward 80%); STOP zeroes the speed; LEFT/RIGHT
+   whistle accelerates smoothly toward 80%); STOP zeroes the speed — and a
+   *second* low whistle starting while the car is already stopped drives it in
+   reverse (down to −40%) for as long as it's held, so low-low is the back-up
+   sequence; LEFT/RIGHT
    set a steering offset that lasts only while the whistle is held. Wheel
    commands are `left = speed + turn·25`, `right = speed − turn·25` — a moving
    car arcs, a stopped car spins in place.

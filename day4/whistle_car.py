@@ -5,7 +5,8 @@ The microphone stream is chopped into ~46 ms chunks; each chunk is FFT'd
 and the dominant pitch inside the whistle band (500-3500 Hz) is
 classified into one of four commands:
 
-    LOW      500- 900 Hz   STOP  (speed -> 0)
+    LOW      500- 900 Hz   STOP; a second low whistle while stopped
+                           REVERSES (backs up while held)
     MID-LOW  900-1400 Hz   TURN LEFT  (while the whistle is held)
     MID-HIGH 1400-2000 Hz  TURN RIGHT (while the whistle is held)
     HIGH    2000-3500 Hz   SPEED UP   (accelerates while held)
@@ -66,14 +67,16 @@ HOLD_FRAMES = 3               # consecutive agreeing chunks before acting
 
 # --- Driving ---------------------------------------------------------------
 MAX_SPEED = 80                # percent
+MAX_REVERSE = 40              # reverse speed cap (percent)
 ACCEL_STEP = 4                # speed added per HIGH-whistle chunk (~21/s)
+REVERSE_STEP = 3              # reverse speed added per LOW-whistle chunk
 TURN_SPEED = 25               # wheel differential while turning
 NO_WHISTLE_TIMEOUT = 10.0     # s of silence before the fail-safe stop
 CMD_HZ = 20                   # motor command rate
 
 # --- Bluetooth card (same pattern as Day 3) --------------------------------
 CARD_COLOR_NAME = "ORANGE"    # None = first Double Motor found
-CARD_SERIAL = 1142
+CARD_SERIAL = 7572
 LEFT_SIGN, RIGHT_SIGN = +1, -1  # motors are mounted mirror-image
 
 
@@ -171,12 +174,21 @@ class Policy:
         self.turn = 0            # -1 left, 0 straight, +1 right
         self.last_decision = "-"
         self.last_heard = time.monotonic()
+        self._stop_action = None   # what THIS low-whistle event does: 'stop'|'reverse'
 
     def update(self, decision):
         now = time.monotonic()
         with self.lock:
             if decision == "STOP":
-                self.speed = 0.0
+                # Sequence: a low whistle while moving stops the car; a NEW
+                # low whistle while already stopped backs it up (reversing
+                # faster the longer it's held); another one stops it again.
+                if self._stop_action is None:      # first chunk of this whistle
+                    self._stop_action = "reverse" if self.speed == 0 else "stop"
+                if self._stop_action == "stop":
+                    self.speed = 0.0
+                else:
+                    self.speed = max(-MAX_REVERSE, self.speed - REVERSE_STEP)
                 self.turn = 0
             elif decision == "FASTER":
                 self.speed = min(MAX_SPEED, self.speed + ACCEL_STEP)
@@ -186,10 +198,13 @@ class Policy:
             elif decision == "RIGHT":
                 self.turn = +1
             else:                          # no whistle this chunk
+                self._stop_action = None   # the low-whistle event has ended
                 self.turn = 0              # turns only last while whistling
-                if now - self.last_heard > NO_WHISTLE_TIMEOUT and self.speed > 0:
+                if now - self.last_heard > NO_WHISTLE_TIMEOUT and self.speed != 0:
                     self.speed = 0.0       # fail-safe: long silence = stop
                 return
+            if decision != "STOP":
+                self._stop_action = None
             self.last_decision = decision
             self.last_heard = now
 
