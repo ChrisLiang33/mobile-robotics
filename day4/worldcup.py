@@ -73,7 +73,12 @@ class Game:
             print(f"START received on {topic}: game on!")
 
     def on_game_msg(self, topic, payload):
-        if self.role != "goalie" or self.over:
+        if self.role == "ball":
+            # Our own publishes echo back from the broker -- proof they went out.
+            if payload in (MSG_FAIL, MSG_SCORE):
+                print(f"broker confirmed our message went out: '{payload}'")
+            return
+        if self.over:
             return
         if payload == MSG_FAIL:
             self.finish("YOU TAGGED THE BALL -- victory!", play_victory)
@@ -82,10 +87,12 @@ class Game:
 
     # ---- ball-role events ----
     def tagged_out(self):
+        print(f"publishing '{MSG_FAIL}' to {GAME_TOPIC}...")
         self.mqtt.publish(GAME_TOPIC, MSG_FAIL)
         self.finish("TAGGED BY THE GOALIE -- shutting down", play_death)
 
     def scored(self):
+        print(f"publishing '{MSG_SCORE}' to {GAME_TOPIC}...")
         self.mqtt.publish(GAME_TOPIC, MSG_SCORE)
         self.finish("GOOOAL!", play_victory)
 
@@ -99,7 +106,9 @@ class Game:
         self.policy.turn = 0
         self.car.stop()
         print(message)
-        threading.Thread(target=song, daemon=True).start()
+        print("playing song...")
+        # Non-daemon: the song finishes even if the window is closed right away.
+        threading.Thread(target=song, daemon=False).start()
 
     # ---- hooks into whistle_car ----
     def gate_decision(self, decision):
@@ -179,8 +188,8 @@ def main():
     game = Game(args.role, car, policy, mqtt)
 
     mqtt.subscribe(START_TOPIC, game.on_start)
-    if args.role == "goalie":
-        mqtt.subscribe(GAME_TOPIC, game.on_game_msg)
+    # Goalie reacts to game messages; ball hears its own echo as publish proof.
+    mqtt.subscribe(GAME_TOPIC, game.on_game_msg)
 
     running = [True]
     if args.role == "ball":
