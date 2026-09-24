@@ -70,6 +70,8 @@ MAX_SPEED = 80                # percent
 MAX_REVERSE = 40              # reverse speed cap (percent)
 ACCEL_STEP = 4                # speed added per HIGH-whistle chunk (~21/s)
 REVERSE_STEP = 3              # reverse speed added per LOW-whistle chunk
+REVERSE_KICK = 18             # instant reverse speed, so friction can't hold it
+REVERSE_ARM_S = 3.0           # a 2nd low whistle within this window = reverse
 TURN_SPEED = 25               # wheel differential while turning
 NO_WHISTLE_TIMEOUT = 10.0     # s of silence before the fail-safe stop
 CMD_HZ = 20                   # motor command rate
@@ -175,18 +177,26 @@ class Policy:
         self.last_decision = "-"
         self.last_heard = time.monotonic()
         self._stop_action = None   # what THIS low-whistle event does: 'stop'|'reverse'
+        self._rev_armed_until = 0.0  # a low whistle arms reverse for the next one
 
     def update(self, decision):
         now = time.monotonic()
         with self.lock:
             if decision == "STOP":
-                # Sequence: a low whistle while moving stops the car; a NEW
-                # low whistle while already stopped backs it up (reversing
-                # faster the longer it's held); another one stops it again.
+                # Sequence: one low whistle always stops (and arms reverse
+                # for REVERSE_ARM_S); a second low whistle starting within
+                # that window, with the car stopped, backs it up while held.
                 if self._stop_action is None:      # first chunk of this whistle
-                    self._stop_action = "reverse" if self.speed == 0 else "stop"
+                    if self.speed == 0 and now < self._rev_armed_until:
+                        self._stop_action = "reverse"
+                        self._rev_armed_until = 0.0
+                    else:
+                        self._stop_action = "stop"
+                        self._rev_armed_until = now + REVERSE_ARM_S
                 if self._stop_action == "stop":
                     self.speed = 0.0
+                elif self.speed == 0:
+                    self.speed = -REVERSE_KICK   # jump past static friction
                 else:
                     self.speed = max(-MAX_REVERSE, self.speed - REVERSE_STEP)
                 self.turn = 0
