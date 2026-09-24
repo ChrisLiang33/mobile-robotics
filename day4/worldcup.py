@@ -45,8 +45,12 @@ LIGHT_THRESH = 60      # reflection (0-100) that counts as "goalie is here"
 LIGHT_HOLD_S = 0.3     # must stay above threshold this long (no false tags)
 SCORE_HOLD_S = 2.0     # continuous HIGH whistle that declares a goal
 
-LIGHT_CARD_SERIAL = wc.CARD_SERIAL    # light sensor pairs with the same card
-LIGHT_CARD_COLOR_NAME = wc.CARD_COLOR_NAME
+# The color sensor has its OWN connection card (not the motor's 7572).
+# None = connect to the first advertising Color Sensor found -- fine at
+# home; on game day, with everyone's sensors powered up, put YOUR
+# sensor's card serial + color here so you don't grab someone else's.
+LIGHT_CARD_SERIAL = None
+LIGHT_CARD_COLOR_NAME = None
 
 
 class Game:
