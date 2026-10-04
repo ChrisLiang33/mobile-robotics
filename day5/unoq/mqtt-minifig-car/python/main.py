@@ -34,6 +34,8 @@ MQTT_BROKER = "test.mosquitto.org"
 MQTT_PORT = 1883
 MQTT_TOPIC = "ME193/minifig"              # laptop publishes positions here
 DRIVE_TOPIC = "ME193/minifig/drive"       # we echo our decisions here (debugging)
+TEST_TOPIC = "ME193/minifig/test"         # publish {"speed": 50} here to spin the
+TEST_HOLD_S = 2.0                         # motors for 2 s -- wiring test, no camera needed
 MQTT_HEARTBEAT_TOPIC = "ME193/heartbeat"
 HEARTBEAT_INTERVAL = 60
 DEVICE_ID = "Fred2"                        # App Lab's name for this board
@@ -60,11 +62,14 @@ _last_seen = 0.0
 _pos_x = _pos_w = None      # latest position (pixels) and frame width
 _pos_time = 0.0
 _lost = True
+_test_speed = 0            # manual motor test (from TEST_TOPIC)
+_test_until = 0.0
 
 
 def on_connect(client, userdata, flags, rc):
     print(f"[mqtt] connected (rc={rc}), subscribing to {MQTT_TOPIC!r}")
     client.subscribe(MQTT_TOPIC)
+    client.subscribe(TEST_TOPIC)
     send_heartbeat(force=True)
 
 
@@ -74,13 +79,23 @@ def on_disconnect(client, userdata, rc):
 
 def on_message(client, userdata, msg):
     global _last_col, _last_row, _last_seen, _pos_x, _pos_w, _pos_time, _lost
+    global _test_speed, _test_until
     try:
         data = json.loads(msg.payload.decode("utf-8", errors="replace"))
     except (ValueError, json.JSONDecodeError):
         return
+    now = time.monotonic()
+    if msg.topic == TEST_TOPIC:             # wiring test: {"speed": 50} or just 50
+        try:
+            spd = int(data["speed"] if isinstance(data, dict) else data)
+        except (TypeError, KeyError, ValueError):
+            return
+        with _state_lock:
+            _test_speed, _test_until = max(-100, min(100, spd)), now + TEST_HOLD_S
+        print(f"[test] motors at {spd} for {TEST_HOLD_S}s")
+        return
     if not isinstance(data, dict):
         return
-    now = time.monotonic()
     if data.get("found") is False:          # laptop says: nothing in view
         with _state_lock:
             _lost = True
@@ -119,6 +134,9 @@ def compute_speed():
     """The policy: normalized horizontal error -> signed motor speed."""
     with _state_lock:
         lost, x, w, t = _lost, _pos_x, _pos_w, _pos_time
+        test_speed, test_until = _test_speed, _test_until
+    if time.monotonic() < test_until:       # manual wiring test overrides the policy
+        return test_speed, None
     if lost or x is None or time.monotonic() - t > DRIVE_STALE:
         return 0, None
     err = (x - w / 2) / (w / 2)
