@@ -12,6 +12,27 @@ as a zip). Based on Prof. Rogers' *MQTT Minifig Monitor*; adds DC-motor drive.
 Before running: set `DEVICE_ID` in `main.py` to this board's App Lab name,
 and make sure the board is on WiFi (it must reach `test.mosquitto.org`).
 
+## Deploy over SSH (no App Lab needed)
+
+On the UNO Q (user `arduino`), apps live in `~/ArduinoApps/`. `app start`
+compiles and flashes the sketch to the microcontroller, installs
+`requirements.txt`, and runs `main.py` in the background.
+
+```bash
+# on the board, over SSH
+cd ~ && git clone https://github.com/ChrisLiang33/mobile-robotics.git
+cp -r ~/mobile-robotics/day5/unoq/mqtt-minifig-car ~/ArduinoApps/
+arduino-app-cli app start ~/ArduinoApps/mqtt-minifig-car
+arduino-app-cli app logs  ~/ArduinoApps/mqtt-minifig-car   # print() output shows up here
+arduino-app-cli app stop  ~/ArduinoApps/mqtt-minifig-car
+```
+
+To update later: `cd ~/mobile-robotics && git pull`, repeat the `cp -r`, then
+`app stop` and `app start`. If the board has no `git`, copy the folder from a
+laptop instead: `scp -r mqtt-minifig-car arduino@<board-ip>:~/ArduinoApps/`.
+Copy only this folder into `ArduinoApps` (not the whole repo) so no hidden
+`.git` directory ends up inside the app.
+
 ## Wiring: Seeed Studio / Cytron Maker Drive (MX1508)
 
 The Maker Drive takes **two PWM inputs per motor** — exactly what the sketch

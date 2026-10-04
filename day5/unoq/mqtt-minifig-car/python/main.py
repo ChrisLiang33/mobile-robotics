@@ -38,7 +38,7 @@ TEST_TOPIC = "ME193/minifig/test"         # publish {"speed": 50} here to spin t
 TEST_HOLD_S = 2.0                         # motors for 2 s -- wiring test, no camera needed
 MQTT_HEARTBEAT_TOPIC = "ME193/heartbeat"
 HEARTBEAT_INTERVAL = 60
-DEVICE_ID = "Fred2"                        # App Lab's name for this board
+DEVICE_ID = "ChrisLiang-UNOQ"              # shown in the heartbeat; set to your board's name
 
 # --- Display ---------------------------------------------------------------
 FRAME_ROWS, FRAME_COLS = 8, 13
