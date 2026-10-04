@@ -12,57 +12,60 @@ as a zip). Based on Prof. Rogers' *MQTT Minifig Monitor*; adds DC-motor drive.
 Before running: set `DEVICE_ID` in `main.py` to this board's App Lab name,
 and make sure the board is on WiFi (it must reach `test.mosquitto.org`).
 
-## Wiring the motors
+## Wiring: Seeed Studio / Cytron Maker Drive (MX1508)
 
-The sketch drives each motor with **two PWM pins** (A/B): `A=PWM, B=0` is
-forward, `A=0, B=PWM` is backward, `0/0` is stop. Defaults:
+The Maker Drive takes **two PWM inputs per motor** — exactly what the sketch
+sends: `A: PWM, B: 0` = forward, `A: 0, B: PWM` = backward, `0/0` = brake.
+Logic-high is anything ≥ 1.7 V, so the UNO Q's 3.3 V pins drive it directly.
 
-| sketch constant | UNO Q pin | goes to |
+**Signal header (6 pins on the Maker Drive) ↔ UNO Q:**
+
+| Maker Drive pin | UNO Q pin | sketch constant |
 |---|---|---|
-| `M_LEFT_A`  | D5  | left motor input 1 |
-| `M_LEFT_B`  | D6  | left motor input 2 |
-| `M_RIGHT_A` | D9  | right motor input 1 |
-| `M_RIGHT_B` | D10 | right motor input 2 |
+| `M1A` | D5  | `M_LEFT_A`  |
+| `M1B` | D6  | `M_LEFT_B`  |
+| `M2A` | D9  | `M_RIGHT_A` |
+| `M2B` | D10 | `M_RIGHT_B` |
+| `GND` | GND | — (required: common ground) |
+| `5VO` | **nothing** | 5 V @ 200 mA out — far too little for a UNO Q; leave it unconnected |
 
-All four must be **PWM-capable pins** (the ones marked `~` on the header;
-D3/D5/D6/D9/D10/D11 on the UNO layout). Change the constants if you move them.
+**Motor terminals:** left motor's two leads → `M1A`/`M1B` screw terminal,
+right motor → `M2A`/`M2B`. Polarity only sets direction; fix a backwards
+wheel with `LEFT_SIGN`/`RIGHT_SIGN` in the sketch, don't rewire.
 
-**Rules that apply to every driver board:**
-- **Motor power is separate.** Battery pack (4–6× AA, or a 2S LiPo through
-  the driver's rating) → driver `VM` / `+12V` / `VIN`. Never run motors off
-  the UNO Q's 5 V or 3.3 V pins — they can't source the current and the
-  brown-outs reset the board.
-- **Common ground.** Driver `GND` ↔ UNO Q `GND` ↔ battery `−`. Without this
-  the PWM signals have no reference and nothing works.
-- The UNO Q's GPIO is **3.3 V logic**. All the boards below accept that as
-  "high". Don't feed 5 V into a UNO Q pin.
-- Each motor: its two leads go to one driver output pair (`OUT1/OUT2` or
-  `AO1/AO2`). Polarity only sets direction — fix a backwards wheel in
-  software with `LEFT_SIGN`/`RIGHT_SIGN`, no need to rewire.
+**Power — two separate supplies:**
+- **UNO Q**: the USB-C power bank, via its USB-C port. (The UNO Q runs
+  Linux and needs a real 5 V supply; never try to feed it from the Maker
+  Drive's `5VO`.)
+- **Maker Drive `VB+`/`VB−` (green terminal)**: its own **2.5–9.5 V** battery
+  — a 4×AA holder (6 V) is ideal; the board is reverse-polarity protected.
+  Tie this battery's `−` to the same ground as the UNO Q (the `GND` header
+  pin does that once it's wired).
+- *No second battery?* Fallback: UNO Q `5V` header pin → `VB+`, UNO Q `GND`
+  → `VB−`. Small gearmotors run fine on 5 V, but motor start-up spikes can
+  brown out the Linux side and reboot the board mid-drive — if it resets
+  when the wheels kick, you need the separate battery.
 
-**Per driver:**
+**UNO Q PWM gotchas (ArduinoCore-zephyr):**
+- `pinMode()` before `analogWrite()` silently kills PWM on that pin — the
+  sketch deliberately has no `pinMode()` calls for the motor pins.
+- On cores before **0.55.2**, PWM on D3 disabled D6/D8 and PWM on D11
+  disabled D5/D12/D13. The pins above avoid D3/D11; update the core in App
+  Lab (Boards manager) if it's older.
+- Default `analogWrite` frequency (~1 kHz) is within the driver's DC–20 kHz.
 
-- **L298N (red module)** — `IN1,IN2` ← D5,D6; `IN3,IN4` ← D9,D10. Leave the
-  `ENA`/`ENB` **jumpers on** (enable tied high) so the IN pins' PWM controls
-  speed. Keep the `5V-EN` jumper on; do *not* connect its 5 V output to the
-  UNO Q. Works down to ~6 V motor supply; drops ~2 V across itself, so small
-  motors feel weak — fine for this.
-- **TB6612FNG** — `AIN1,AIN2` ← D5,D6; `BIN1,BIN2` ← D9,D10; `PWMA`,`PWMB`
-  tied to 3.3 V (or wire them to D3/D11 and set them HIGH in `setup()`);
-  `STBY` → 3.3 V; `VCC` → 3.3 V (logic); `VM` → battery.
-- **DRV8833** — `AIN1,AIN2` ← D5,D6; `BIN1,BIN2` ← D9,D10; `VCC`/`VM` →
-  battery (3–10 V); `nSLEEP` high if the board exposes it. Simplest of all.
-- **Arduino Motor Shield Rev3** — different scheme (DIR + PWM + BRAKE per
-  channel on fixed pins 12/3/9 and 13/11/8). Say so and the sketch's
-  `setMotor()` gets a 5-line rewrite.
+**Test it without any code:** power the Maker Drive and press its onboard
+**M1A/M1B/M2A/M2B test buttons** — each spins the motor at full speed in
+that direction and lights the status LED. That proves the motors and
+battery before the UNO Q is involved.
 
-**First power-up test (no camera, no model):** run the app, open the MQTT
-debugger (`Public stuff/Debugging/index.html`), and publish to
-`ME193/minifig/test` the payload `{"speed": 50}`. Both wheels should spin
-*forward* for 2 s, then stop. `{"speed": -50}` = backward.
+**Then from the UNO Q:** run the app, open the MQTT debugger
+(`Public stuff/Debugging/index.html`), and publish `{"speed": 50}` to
+`ME193/minifig/test`. Both wheels should spin *forward* for 2 s, then stop.
+`{"speed": -50}` = backward.
 - One wheel backwards → flip that side's `LEFT_SIGN` / `RIGHT_SIGN`.
-- Nothing moves → check common ground and that `ENA/ENB`/`STBY` are high.
-- Board resets when motors kick → motors are drawing from the UNO Q; use a
-  separate battery.
+- Nothing moves but the test buttons work → check `GND` header pin and
+  that the sketch has no `pinMode()` on the motor pins.
+- Board reboots when motors kick → separate motor battery.
 Then run the real thing: if the car drives *away* from the center, flip
 `DIRECTION` in `main.py`.

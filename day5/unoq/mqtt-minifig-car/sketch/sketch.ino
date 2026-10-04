@@ -14,11 +14,15 @@ const uint8_t FRAME_COLS = 13;
 const uint8_t FRAME_SIZE = FRAME_ROWS * FRAME_COLS;
 uint8_t frame[FRAME_SIZE] = {0};
 
-// --- Motor driver wiring --------------------------------------------------
-// Two PWM inputs per motor (DRV8833 / TB6612 / L298N IN1+IN2 style):
+// --- Motor driver wiring: Seeed/Cytron Maker Drive (MX1508) ---------------
+// Two PWM inputs per motor:
 //   forward  = A: PWM, B: 0      backward = A: 0, B: PWM      stop = 0, 0
-// Change these pins to match the robot. Keep them on PWM-capable pins.
-// (TB6612: tie STBY high. L298N: tie ENA/ENB high, or jumper them.)
+//   Maker Drive M1A/M1B <- left motor pins,  M2A/M2B <- right motor pins
+// UNO Q notes (ArduinoCore-zephyr):
+//   * do NOT call pinMode() on these pins -- on the UNO Q it breaks PWM;
+//     analogWrite() configures the pin itself
+//   * keep off D3 and D11: PWM there disables other pins on cores < 0.55.2
+//     (update the core in App Lab if it's older)
 const int M_LEFT_A  = 5;
 const int M_LEFT_B  = 6;
 const int M_RIGHT_A = 9;
@@ -52,9 +56,7 @@ void draw(std::vector<uint8_t> newFrame) {
 }
 
 void setup() {
-  pinMode(M_LEFT_A, OUTPUT);  pinMode(M_LEFT_B, OUTPUT);
-  pinMode(M_RIGHT_A, OUTPUT); pinMode(M_RIGHT_B, OUTPUT);
-  drive(0);
+  drive(0);   // analogWrite() sets up the pins; no pinMode() (see note above)
 
   matrix.begin();
   matrix.setGrayscaleBits(3);
