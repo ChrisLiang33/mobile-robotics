@@ -1,0 +1,5 @@
+name: MQTT Minifig Car
+description: "Shows the laptop-detected green minifig on the LED matrix and drives DC motors to center it"
+ports: []
+bricks: []
+icon: 🚗

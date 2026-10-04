@@ -1,0 +1,7 @@
+runs/
+data/dataset/
+data/dataset.yaml
+yolov8*.pt
+yolo11*.pt
+*.cache
+__pycache__/
