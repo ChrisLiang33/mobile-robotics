@@ -106,15 +106,23 @@ speed = Kp · err                 # Kp = 70 → proportional control
 - otherwise the command is **proportional to the distance from center** —
   fast when far away, slowing as it approaches — floored at `MIN_SPEED = 30`
   so static friction can't strand it just short of center, clamped at ±80,
-  and multiplied by `DIRECTION` (±1, set once from a drive test).
-- The signed speed goes over the Bridge to the sketch, which PWMs the two
-  motors (one sign-flipped for mirrored mounting). Forward/backward along the
-  robot's axis is left/right on screen because the minifig rides on its side.
+  and multiplied by `DIRECTION` (−1 on our car: found by driving it once and
+  watching whether it rolled toward the center line or away from it).
+- The signed speed goes over the Bridge to the sketch, which PWMs both motors
+  through the motor driver. (Our motors are wired with opposite polarity,
+  which cancels their mirror-image mounting, so the sketch sends both the
+  same sign.) Forward/backward along the car's axis is left/right on screen
+  because the minifig rides facing sideways.
+- The laptop's part ends at the measurement: each frame it keeps the most
+  confident `green_minifig` box above 0.5, takes its center, and publishes it
+  (at most 15 times a second).
 
 It's a P-controller on pixel error, the same idea as the Day 3 AprilTag car,
 but split across two computers: the laptop measures (YOLO), MQTT carries the
 measurement, the Arduino decides and acts. The sketch also has a 1-second
-watchdog: if the Linux side stops sending commands, the motors stop.
+watchdog: if the Linux side stops sending commands, the motors stop. (While
+the car is moving, the Linux side repeats the current speed every 0.3 s so
+the watchdog only fires when something has actually died.)
 
 ## Q2 — What does your code do if no minifigure is detected?
 
