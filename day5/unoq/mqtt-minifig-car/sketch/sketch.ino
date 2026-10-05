@@ -27,8 +27,10 @@ const int M_LEFT_A  = 5;
 const int M_LEFT_B  = 6;
 const int M_RIGHT_A = 9;
 const int M_RIGHT_B = 10;
-const int LEFT_SIGN  = +1;   // flip one of these if a wheel spins the
-const int RIGHT_SIGN = -1;   // wrong way (motors are mounted mirror-image)
+const int LEFT_SIGN  = +1;   // flip one of these if a wheel spins the wrong
+const int RIGHT_SIGN = +1;   // way. Both +1 here: this car's motors are wired
+                             // with opposite polarity, which already cancels
+                             // their mirror-image mounting.
 
 const unsigned long WATCHDOG_MS = 1000;
 unsigned long lastDriveMs = 0;
