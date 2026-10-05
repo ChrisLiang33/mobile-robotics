@@ -1,8 +1,9 @@
 """
 Step 2 -- label the captured images (semi-automatic, human-verified).
 
-    python label.py          # labels every image in data/raw that has no label yet
-    python label.py --redo   # revisit everything
+    python label.py                    # every image in data/raw with no label yet
+    python label.py --redo             # revisit everything
+    python label.py --only 20 113 176  # revisit just these photo numbers
 
 For each image the tool PROPOSES a box around the biggest green blob (plain
 HSV thresholding -- classical CV, no neural net, no cloud service). You then
@@ -29,11 +30,17 @@ import numpy as np
 
 from common import RAW_DIR, LABEL_DIR
 
-# HSV range for the LEGO bright-green minifig (OpenCV hue is 0-180).
-GREEN_LO = np.array([35, 70, 50])
-GREEN_HI = np.array([85, 255, 255])
-MIN_AREA = 150      # px^2 -- ignore specks
-PAD = 6             # px added around the blob so the box covers edges/limbs
+# HSV range for the minifig's plastic (OpenCV hue is 0-180): a NARROW band of
+# SATURATED green. Measured on our photos, minifig pixels sit at hue 66-76 with
+# saturation around 215, while the car's green jumper wires are duller
+# (saturation around 115) and spread over hue 48-83. A loose "anything green"
+# range (35-85, sat 70+) put boxes on the wires and stretched boxes over wire
+# loops; this one doesn't. Press m in the tool to see the mask, and widen the
+# range if your minifig isn't being found in your lighting.
+GREEN_LO = np.array([62, 120, 50])
+GREEN_HI = np.array([79, 255, 255])
+MIN_AREA = 70       # px^2 -- ignore specks
+PAD = 7             # px added around the blob so the box covers edges/limbs
 SCALE = 2           # show images this many times larger (boxes are small)
 
 YELLOW, CYAN, WHITE = (0, 255, 255), (255, 255, 0), (255, 255, 255)
@@ -42,14 +49,13 @@ YELLOW, CYAN, WHITE = (0, 255, 255), (255, 255, 0), (255, 255, 255)
 def green_mask(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, GREEN_LO, GREEN_HI)
-    k = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))   # rejoin a figure split by a finger
     return mask
 
 
 def propose_box(img):
-    """Bounding box (x1, y1, x2, y2) of the largest green blob, or None."""
+    """Bounding box (x1, y1, x2, y2) of the largest minifig-green blob, or None."""
     mask = green_mask(img)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -78,10 +84,18 @@ def write_label(name, box, shape):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--redo", action="store_true", help="revisit already-labeled images too")
+    ap.add_argument("--only", type=int, nargs="+", metavar="N",
+                    help="revisit only these photo numbers (e.g. 20 for img_0020.jpg)")
     args = ap.parse_args()
 
     images = sorted(f for f in os.listdir(RAW_DIR) if f.lower().endswith(".jpg"))
-    if not args.redo:
+    if args.only:
+        wanted = {f"img_{n:04d}.jpg" for n in args.only}
+        missing = sorted(wanted - set(images))
+        if missing:
+            print("not found:", ", ".join(missing))
+        images = [f for f in images if f in wanted]
+    elif not args.redo:
         images = [f for f in images
                   if not os.path.exists(os.path.join(LABEL_DIR, os.path.splitext(f)[0] + ".txt"))]
     if not images:
