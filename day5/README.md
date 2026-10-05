@@ -54,7 +54,11 @@ metrics (also saved to `models/metrics.txt`; curves and confusion matrix in
 draws a green box and a **blue dot** on the centroid (same color as the UNO Q
 LEDs), shows the normalized error and what the UNO Q should do, and a mini
 13×8 **LED-matrix preview** in the corner so you can debug without the board.
-Publishes to `ME193/minifig` on `test.mosquitto.org` at up to 15 Hz:
+Publishes to `ME193/minifig/chris` on `test.mosquitto.org` at up to 15 Hz. (Our
+own topic rather than the shared class default `ME193/minifig`: with several
+teams in one room, a shared topic lets everyone's detections drive everyone's
+car. It is one constant, `MQTT_TOPIC`, in `common.py` and in the UNO Q's
+`main.py` — they must match.)
 
 ```json
 {"x": 731, "y": 402, "w": 1280, "h": 720, "bw": 58, "bh": 131, "conf": 0.93, "found": true}
@@ -65,14 +69,15 @@ Plumbing test before you have a trained model:
 `python track_minifig.py --model yolov8n.pt --class-name person` tracks *you*
 with the stock COCO model through the exact same code path.
 
-**5. UNO Q** — open `unoq/mqtt-minifig-car/` in Arduino App Lab, set the
-motor pins / signs at the top of `sketch.ino` to match the robot, set
-`DEVICE_ID` in `python/main.py`, run. The board subscribes to the feed, draws
-the marker, and drives.
+**5. UNO Q** — with the board plugged into the laptop by USB-C, run
+`./unoq/unoq.sh deploy` (copies `unoq/mqtt-minifig-car/` to the board and
+starts it; `./unoq/unoq.sh logs` shows its output). The board must be on WiFi
+to reach the broker. It subscribes to the feed, draws the marker, and drives.
+Wiring, SSH and App Lab alternatives are in `unoq/mqtt-minifig-car/README.md`.
 
 **Debugging**: open Prof. Rogers' `Public stuff/Debugging/index.html` MQTT
-console in a browser, subscribe to `ME193/minifig` to watch the laptop's feed
-and `ME193/minifig/drive` to watch the UNO Q's decisions (`{"err": 0.31,
+console in a browser, subscribe to `ME193/minifig/chris` to watch the laptop's
+feed and `ME193/minifig/chris/drive` to watch the UNO Q's decisions (`{"err": 0.31,
 "speed": 30}`), or publish a hand-written position to move the LED dot and the
 car without the camera at all.
 

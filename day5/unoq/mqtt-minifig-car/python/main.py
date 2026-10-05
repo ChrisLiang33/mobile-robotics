@@ -21,20 +21,33 @@ marker shrinks to 1 pixel at the last known position).
 """
 
 import json
+import os
 import threading
 import time
 
 import numpy as np
 import paho.mqtt.client as mqtt
 
-from arduino.app_utils import App, Bridge, Frame
+from arduino.app_utils import App, Bridge
+
+try:                                    # newer board images ship a Frame helper
+    from arduino.app_utils import Frame
+
+    def to_board_bytes(array):
+        return Frame(array).to_board_bytes()
+except ImportError:                     # older images (app-bricks 0.5): by hand --
+    def to_board_bytes(array):          # 104 brightness bytes, row-major, values 0-7
+        return array.astype(np.uint8).tobytes()
 
 # --- MQTT ------------------------------------------------------------------
 MQTT_BROKER = "test.mosquitto.org"
 MQTT_PORT = 1883
-MQTT_TOPIC = "ME193/minifig"              # laptop publishes positions here
-DRIVE_TOPIC = "ME193/minifig/drive"       # we echo our decisions here (debugging)
-TEST_TOPIC = "ME193/minifig/test"         # publish {"speed": 50} here to spin the
+# Our own topic, not the shared class default "ME193/minifig": with several
+# teams in one room, a shared topic means everyone's detections drive
+# everyone's car. Must match MQTT_TOPIC in the laptop's common.py.
+MQTT_TOPIC = os.environ.get("MINIFIG_TOPIC", "ME193/minifig/chris")
+DRIVE_TOPIC = MQTT_TOPIC + "/drive"       # we echo our decisions here (debugging)
+TEST_TOPIC = MQTT_TOPIC + "/test"         # publish {"speed": 50} here to spin the
 TEST_HOLD_S = 2.0                         # motors for 2 s -- wiring test, no camera needed
 MQTT_HEARTBEAT_TOPIC = "ME193/heartbeat"
 HEARTBEAT_INTERVAL = 60
@@ -54,6 +67,8 @@ MIN_SPEED = 30       # smallest command that actually moves the car
 MAX_SPEED = 80
 DIRECTION = +1       # flip to -1 if the car drives away from center
 DRIVE_STALE = 0.5    # s without a position -> stop
+DRIVE_KEEPALIVE = 0.3  # resend an unchanged speed this often: the sketch's
+                       # watchdog stops the motors after 1 s of silence
 DRIVE_ECHO_HZ = 5
 
 _state_lock = threading.Lock()
@@ -149,17 +164,38 @@ def compute_speed():
     return int(round(speed)), err
 
 
-client = mqtt.Client()
+try:
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)   # paho-mqtt 2.x
+except AttributeError:
+    client = mqtt.Client()                                    # paho-mqtt 1.x
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
 client.on_message = on_message
 client.reconnect_delay_set(min_delay=1, max_delay=30)
-client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+# connect_async + loop_start retries in the background, so the app survives
+# being started at boot before WiFi is up, and WiFi dropouts afterwards.
+client.connect_async(MQTT_BROKER, MQTT_PORT, keepalive=60)
 client.loop_start()
 
 _last_heartbeat = time.monotonic()
 _last_cmd = None
+_last_drive_sent = 0.0
 _last_echo = 0.0
+_last_bridge_error = 0.0
+
+
+def bridge_call(name, *args):
+    """Bridge.call that reports a failure instead of killing the app."""
+    global _last_bridge_error
+    try:
+        Bridge.call(name, *args)
+        return True
+    except Exception as e:                      # keep the control loop alive
+        now = time.monotonic()
+        if now - _last_bridge_error > 2.0:      # don't flood the log at 20 Hz
+            print(f"[bridge] {name} failed: {e}")
+            _last_bridge_error = now
+        return False
 
 
 def send_heartbeat(force=False):
@@ -172,16 +208,20 @@ def send_heartbeat(force=False):
 
 
 def loop():
-    global _last_cmd, _last_echo
+    global _last_cmd, _last_drive_sent, _last_echo
     send_heartbeat()
-    Bridge.call("draw", Frame(build_frame()).to_board_bytes())
+    bridge_call("draw", to_board_bytes(build_frame()))
 
     speed, err = compute_speed()
-    if speed != _last_cmd:                  # only talk to the MCU on change
-        Bridge.call("drive", speed)
-        _last_cmd = speed
-        print(f"[drive] err={err if err is None else round(err, 3)} -> speed {speed}")
     now = time.monotonic()
+    changed = speed != _last_cmd
+    # Send on change, and keep resending a non-zero speed so the sketch's
+    # watchdog knows we're still here.
+    if changed or (speed != 0 and now - _last_drive_sent >= DRIVE_KEEPALIVE):
+        if bridge_call("drive", speed):
+            _last_cmd, _last_drive_sent = speed, now
+            if changed:
+                print(f"[drive] err={err if err is None else round(err, 3)} -> speed {speed}")
     if now - _last_echo >= 1.0 / DRIVE_ECHO_HZ:
         client.publish(DRIVE_TOPIC, json.dumps({"err": None if err is None else round(err, 3),
                                                 "speed": speed}))

@@ -19,8 +19,8 @@ CAMERA_INDEX = 0                  # 0 = built-in camera
 FRAME_W, FRAME_H = 1280, 720
 
 # MQTT contract with the UNO Q app (from Prof. Rogers' MQTT Minifig Monitor)
-MQTT_TOPIC = "ME193/minifig"
-DRIVE_TOPIC = "ME193/minifig/drive"   # the UNO Q echoes its decisions here
+MQTT_TOPIC = "ME193/minifig/chris"   # our own topic (the shared class default is "ME193/minifig")
+DRIVE_TOPIC = MQTT_TOPIC + "/drive"    # the UNO Q echoes its decisions here
 
 
 def open_camera(index=None):

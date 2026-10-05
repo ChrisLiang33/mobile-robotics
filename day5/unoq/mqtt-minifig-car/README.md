@@ -3,14 +3,37 @@
 Load this folder as an app in **Arduino App Lab** on the UNO Q (or import it
 as a zip). Based on Prof. Rogers' *MQTT Minifig Monitor*; adds DC-motor drive.
 
-- `python/main.py` — subscribes to `ME193/minifig`, draws the marker on the
+- `python/main.py` — subscribes to `ME193/minifig/chris`, draws the marker on the
   LED matrix, runs the centering policy, calls `drive(speed)` on the sketch,
-  echoes decisions on `ME193/minifig/drive`.
+  echoes decisions on `ME193/minifig/chris/drive`.
 - `sketch/sketch.ino` — LED matrix + H-bridge motor PWM + 1 s watchdog.
   **Set the motor pins / signs at the top to match the robot.**
 
 Before running: set `DEVICE_ID` in `main.py` to this board's App Lab name,
 and make sure the board is on WiFi (it must reach `test.mosquitto.org`).
+
+## Deploy over USB (no App Lab window, no SSH)
+
+With the board plugged into the laptop by USB-C, `../unoq.sh` wraps `adb`
+(App Lab installs a copy) and the board's `arduino-app-cli`:
+
+```bash
+../unoq.sh status     # board name, WiFi, IP, app state
+../unoq.sh deploy     # copy this folder to the board and (re)start the app
+../unoq.sh logs       # follow the app's print() output
+../unoq.sh shell      # interactive shell on the board
+../unoq.sh boot on    # start the app by itself whenever the board powers up
+```
+
+The first start needs internet on the board: the build downloads the four
+small libraries listed in `sketch/sketch.yaml`.
+
+**Works on old and new board images.** Written against a board still on its
+factory image (zephyr core 0.52.0, app-bricks 0.5.0, paho-mqtt 2.1.0) and
+Prof. Rogers' newer one: `main.py` falls back to raw bytes when
+`arduino.app_utils.Frame` doesn't exist, creates the MQTT client in a way
+both paho 1.x and 2.x accept, and connects in the background so it survives
+booting before WiFi is up.
 
 ## Deploy over SSH (no App Lab needed)
 
@@ -82,7 +105,7 @@ battery before the UNO Q is involved.
 
 **Then from the UNO Q:** run the app, open the MQTT debugger
 (`Public stuff/Debugging/index.html`), and publish `{"speed": 50}` to
-`ME193/minifig/test`. Both wheels should spin *forward* for 2 s, then stop.
+`ME193/minifig/chris/test`. Both wheels should spin *forward* for 2 s, then stop.
 `{"speed": -50}` = backward.
 - One wheel backwards → flip that side's `LEFT_SIGN` / `RIGHT_SIGN`.
 - Nothing moves but the test buttons work → check `GND` header pin and

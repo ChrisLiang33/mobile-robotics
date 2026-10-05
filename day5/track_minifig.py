@@ -9,7 +9,7 @@ Step 4 -- live tracker: webcam -> our YOLO model -> minifig position over MQTT.
 
 Every frame: run the detector, keep the most confident green_minifig box,
 draw it (green box, BLUE dot on the centroid -- same color as the UNO Q's
-LEDs), and publish to ME193/minifig the JSON the UNO Q app reads:
+LEDs), and publish to MQTT_TOPIC (see common.py) the JSON the UNO Q app reads:
     {"x": cx, "y": cy, "w": W, "h": H, "bw": bw, "bh": bh, "conf": 0.93, "found": true}
 If nothing is detected:
     {"found": false, "w": W, "h": H}
