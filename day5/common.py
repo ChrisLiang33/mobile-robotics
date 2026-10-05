@@ -23,12 +23,47 @@ MQTT_TOPIC = "ME193/minifig/chris"   # our own topic (the shared class default i
 DRIVE_TOPIC = MQTT_TOPIC + "/drive"    # the UNO Q echoes its decisions here
 
 
+def list_cameras():
+    """[(index, name, is_builtin)] in the order OpenCV numbers them on macOS.
+
+    OpenCV's macOS backend sorts cameras by their system unique ID and uses
+    the position in that list as the index, so an iPhone within Continuity
+    Camera range can become "camera 0" and push the laptop's own camera to 1.
+    This reproduces that ordering so cameras can be chosen by name. Returns
+    [] when it can't tell (not macOS, or pyobjc-framework-AVFoundation missing).
+    """
+    try:
+        import AVFoundation as avf
+    except ImportError:
+        return []
+    devs = list(avf.AVCaptureDevice.devicesWithMediaType_(avf.AVMediaTypeVideo) or []) + \
+        list(avf.AVCaptureDevice.devicesWithMediaType_(avf.AVMediaTypeMuxed) or [])
+    devs.sort(key=lambda d: str(d.uniqueID()))
+    out = []
+    for i, d in enumerate(devs):
+        name, kind = str(d.localizedName()), str(d.deviceType())
+        try:
+            phone = bool(d.isContinuityCamera())
+        except Exception:
+            phone = "Continuity" in kind
+        builtin = not phone and ("FaceTime" in name or "BuiltIn" in kind)
+        out.append((i, name, builtin))
+    return out
+
+
 def open_camera(index=None):
-    """Open the first camera that actually delivers frames (macOS opens
-    Continuity Cameras and permission-denied devices 'successfully' but
-    never produces a frame, so each candidate must prove itself)."""
-    indices = [index] if index is not None else \
-        [CAMERA_INDEX] + [i for i in range(4) if i != CAMERA_INDEX]
+    """Open a camera that actually delivers frames. With no index given, the
+    laptop's built-in camera is preferred over a nearby iPhone; macOS also
+    opens Continuity Cameras and permission-denied devices 'successfully'
+    without ever producing a frame, so each candidate must prove itself."""
+    cams = list_cameras()
+    names = {i: n for i, n, _ in cams}
+    if index is not None:
+        indices = [index]
+    else:
+        builtin = [i for i, _, b in cams if b]
+        indices = builtin + [i for i in [CAMERA_INDEX, 0, 1, 2, 3] if i not in builtin]
+        indices = list(dict.fromkeys(indices))
     for idx in indices:
         cap = cv2.VideoCapture(idx, cv2.CAP_AVFOUNDATION)
         if not cap.isOpened():
@@ -42,10 +77,15 @@ def open_camera(index=None):
         for _ in range(40):
             ret, frame = cap.read()
             if ret and frame is not None:
-                print(f"Using camera {idx}")
+                print(f"Using camera {idx}" + (f" ({names[idx]})" if idx in names else ""))
                 return cap
             time.sleep(0.05)
         print(f"Camera {idx} opened but produced no frames, trying next...")
         cap.release()
     raise RuntimeError("No camera delivered frames. Check System Settings -> "
                        "Privacy & Security -> Camera for your terminal app.")
+
+
+if __name__ == "__main__":      # python common.py  -> show the camera list
+    for i, name, builtin in list_cameras() or [(None, "(camera names unavailable on this system)", False)]:
+        print(f"  --camera {i}: {name}" + ("   <- built-in, used by default" if builtin else ""))

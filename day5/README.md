@@ -27,8 +27,15 @@ Two parts, one pipeline:
 
 ```bash
 pip install ultralytics opencv-python paho-mqtt numpy
+pip install pyobjc-framework-AVFoundation   # macOS only, optional: see below
 ```
 (ultralytics brings PyTorch; on an Apple-silicon Mac training uses the GPU via `mps`.)
+
+**Which camera?** The scripts use the laptop's built-in camera. On a Mac, an
+iPhone that is nearby can show up as a second camera (Continuity Camera) and
+OpenCV may number it first; with the optional package above the scripts
+identify cameras by name and skip the phone. `python common.py` lists them,
+and `--camera N` on `capture.py` / `track_minifig.py` forces a specific one.
 
 ## The pipeline
 
