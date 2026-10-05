@@ -10,7 +10,8 @@ What it does:
      can't sit on both sides of the split
   2. writes data/dataset.yaml for ultralytics
   3. trains (transfer learning from the COCO-pretrained weights, which are
-     downloaded automatically the first time) on Apple GPU (mps) if available
+     downloaded automatically the first time) on an NVIDIA GPU if there is
+     one, else the Apple GPU (mps), else the CPU
   4. copies the best checkpoint to models/minifig.pt
   5. runs validation and prints precision / recall / mAP -- the numbers for
      "how good is your model?" -- and writes them to models/metrics.txt
@@ -102,13 +103,20 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--group", type=int, default=10,
                     help="consecutive frames kept together when splitting train/val")
-    ap.add_argument("--device", default=None, help="mps / cpu (default: auto)")
+    ap.add_argument("--device", default=None, help="0 (NVIDIA) / mps (Apple) / cpu; default: best available")
     args = ap.parse_args()
 
     import torch
     from ultralytics import YOLO
 
-    device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
+    if args.device:
+        device = args.device
+    elif torch.cuda.is_available():
+        device = "0"                      # NVIDIA GPU
+    elif torch.backends.mps.is_available():
+        device = "mps"                    # Apple GPU
+    else:
+        device = "cpu"
     n_train, n_val, n_neg = split_dataset(args.val_frac, args.seed, args.group)
 
     model = YOLO(args.model)
