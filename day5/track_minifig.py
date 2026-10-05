@@ -120,7 +120,9 @@ def main():
                 cv2.putText(frame, f"{args.class_name} {conf:.2f}  ({cx:.0f}, {cy:.0f})",
                             (int(x1), max(20, int(y1) - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, GREEN, 2, cv2.LINE_AA)
                 err = (cx - W / 2) / (W / 2)
-                hint = "STOP (centered)" if abs(err) < DEADBAND else ("drive -> right" if err > 0 else "drive <- left")
+                # err > 0: the minifig is right of center, so the car has to carry it LEFT
+                hint = "STOP (centered)" if abs(err) < DEADBAND else \
+                    ("move it LEFT, toward center" if err > 0 else "move it RIGHT, toward center")
                 cv2.putText(frame, f"err {err:+.2f}   UNO Q should: {hint}",
                             (10, H - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, WHITE, 2, cv2.LINE_AA)
                 col = min(LED_COLS - 1, max(0, int(cx / W * LED_COLS)))
