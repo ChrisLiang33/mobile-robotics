@@ -12,28 +12,37 @@ as a zip). Based on Prof. Rogers' *MQTT Minifig Monitor*; adds DC-motor drive.
 Before running: set `DEVICE_ID` in `main.py` to this board's App Lab name,
 and make sure the board is on WiFi (it must reach `test.mosquitto.org`).
 
-## Deploy over USB (no App Lab window, no SSH)
+## Deploy with `unoq.sh` (no App Lab window)
 
-With the board plugged into the laptop by USB-C, `../unoq.sh` wraps `adb`
-(App Lab installs a copy) and the board's `arduino-app-cli`:
+`../unoq.sh` wraps the board's `arduino-app-cli`. It reaches the board over
+USB by default (through `adb`, which App Lab installs), or over WiFi when
+`UNOQ_HOST` is set to the board's IP address:
 
 ```bash
-../unoq.sh status     # board name, WiFi, IP, app state
+../unoq.sh status                             # over USB
+UNOQ_HOST=10.5.13.215 ../unoq.sh status       # over WiFi (ssh)
+
 ../unoq.sh deploy     # copy this folder to the board and (re)start the app
 ../unoq.sh logs       # follow the app's print() output
 ../unoq.sh shell      # interactive shell on the board
 ../unoq.sh boot on    # start the app by itself whenever the board powers up
 ```
 
-The first start needs internet on the board: the build downloads the four
-small libraries listed in `sketch/sketch.yaml`.
+For WiFi, run `ssh-copy-id arduino@<board-ip>` once so it stops asking for the
+password. A UNO Q runs one app at a time; `deploy` stops any other running app
+first (restart that one later with `arduino-app-cli app start ~/ArduinoApps/<name>`).
+The first start takes about two minutes (it builds and flashes the sketch);
+later deploys take ~15 s.
 
-**Works on old and new board images.** Written against a board still on its
-factory image (zephyr core 0.52.0, app-bricks 0.5.0, paho-mqtt 2.1.0) and
-Prof. Rogers' newer one: `main.py` falls back to raw bytes when
-`arduino.app_utils.Frame` doesn't exist, creates the MQTT client in a way
-both paho 1.x and 2.x accept, and connects in the background so it survives
-booting before WiFi is up.
+**Works on old and new board software.** Tested on a board with current
+software (App CLI 0.13, zephyr core 1.0.0); also written to run on a board
+still on its factory image (App CLI 0.7, core 0.52.0, no
+`arduino.app_utils.Frame`), which has not been run end to end yet. `main.py`
+falls back to raw bytes when `Frame` doesn't exist, creates the MQTT client in
+a way both paho 1.x and 2.x accept, and connects in the background so it
+survives booting before WiFi is up. The two software versions want different
+`sketch.yaml` files: `sketch/sketch.yaml` is the current format, and `deploy`
+swaps in `../sketch.old-image.yaml` when it detects a factory-image board.
 
 ## Deploy over SSH (no App Lab needed)
 
@@ -50,6 +59,9 @@ arduino-app-cli app logs  ~/ArduinoApps/mqtt-minifig-car   # print() output show
 arduino-app-cli app stop  ~/ArduinoApps/mqtt-minifig-car
 ```
 
+(Doing it by hand like this, stop any other running app first with
+`arduino-app-cli app stop ~/ArduinoApps/<name>`, and on a factory-image board
+copy `sketch.old-image.yaml` over `sketch/sketch.yaml`.)
 To update later: `cd ~/mobile-robotics && git pull`, repeat the `cp -r`, then
 `app stop` and `app start`. If the board has no `git`, copy the folder from a
 laptop instead: `scp -r mqtt-minifig-car arduino@<board-ip>:~/ArduinoApps/`.

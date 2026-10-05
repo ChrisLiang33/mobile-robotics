@@ -69,9 +69,10 @@ Plumbing test before you have a trained model:
 `python track_minifig.py --model yolov8n.pt --class-name person` tracks *you*
 with the stock COCO model through the exact same code path.
 
-**5. UNO Q** — with the board plugged into the laptop by USB-C, run
-`./unoq/unoq.sh deploy` (copies `unoq/mqtt-minifig-car/` to the board and
-starts it; `./unoq/unoq.sh logs` shows its output). The board must be on WiFi
+**5. UNO Q** — run `./unoq/unoq.sh deploy` with the board plugged into the
+laptop by USB-C, or `UNOQ_HOST=<board-ip> ./unoq/unoq.sh deploy` over WiFi
+(copies `unoq/mqtt-minifig-car/` to the board and starts it;
+`./unoq/unoq.sh logs` shows its output). The board must be on WiFi
 to reach the broker. It subscribes to the feed, draws the marker, and drives.
 Wiring, SSH and App Lab alternatives are in `unoq/mqtt-minifig-car/README.md`.
 
