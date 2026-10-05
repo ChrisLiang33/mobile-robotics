@@ -34,6 +34,7 @@ GREEN_LO = np.array([35, 70, 50])
 GREEN_HI = np.array([85, 255, 255])
 MIN_AREA = 150      # px^2 -- ignore specks
 PAD = 6             # px added around the blob so the box covers edges/limbs
+SCALE = 2           # show images this many times larger (boxes are small)
 
 YELLOW, CYAN, WHITE = (0, 255, 255), (255, 255, 0), (255, 255, 255)
 
@@ -88,9 +89,10 @@ def main():
         return
     print(f"{len(images)} images to label")
 
-    state = {"box": None, "manual": False, "drag": None}
+    state = {"box": None, "manual": False, "drag": None, "proposal": None, "size": (0, 0)}
 
     def on_mouse(event, x, y, flags, _):
+        x, y = x // SCALE, y // SCALE          # window pixels -> image pixels
         if event == cv2.EVENT_LBUTTONDOWN:
             state["drag"] = (x, y)
         elif event == cv2.EVENT_MOUSEMOVE and state["drag"] is not None:
@@ -99,9 +101,13 @@ def main():
             state["manual"] = True
         elif event == cv2.EVENT_LBUTTONUP and state["drag"] is not None:
             x0, y0 = state["drag"]
-            state["box"] = (min(x0, x), min(y0, y), max(x0, x), max(y0, y))
-            state["manual"] = True
             state["drag"] = None
+            if abs(x - x0) < 4 or abs(y - y0) < 4:      # a click, not a drag
+                state["box"], state["manual"] = state["proposal"], False
+                return
+            W, H = state["size"]
+            state["box"] = (max(0, min(x0, x)), max(0, min(y0, y)), min(W - 1, max(x0, x)), min(H - 1, max(y0, y)))
+            state["manual"] = True
 
     cv2.namedWindow("label")
     cv2.setMouseCallback("label", on_mouse)
@@ -116,19 +122,23 @@ def main():
         if img is None:
             i += 1
             continue
-        state["box"], state["manual"] = propose_box(img), False
+        state["proposal"] = propose_box(img)
+        state["box"], state["manual"], state["drag"] = state["proposal"], False, None
+        state["size"] = (img.shape[1], img.shape[0])
 
         while True:
             view = cv2.cvtColor(green_mask(img), cv2.COLOR_GRAY2BGR) if show_mask else img.copy()
+            view = cv2.resize(view, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_LINEAR)
             if state["box"] is not None:
-                x1, y1, x2, y2 = state["box"]
+                x1, y1, x2, y2 = (v * SCALE for v in state["box"])
                 cv2.rectangle(view, (x1, y1), (x2, y2), CYAN if state["manual"] else YELLOW, 2)
             status = ("box: " + ("yours" if state["manual"] else "proposal")) \
                 if state["box"] is not None else "no green found -> x for negative, or draw"
-            cv2.putText(view, f"[{i + 1}/{len(images)}] {fname}   {status}",
-                        (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, WHITE, 2, cv2.LINE_AA)
-            cv2.putText(view, "SPACE accept  drag=draw  x none  s skip  d delete  m mask  b back  q quit",
-                        (10, view.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1, cv2.LINE_AA)
+            for color, thick in ((0, 0, 0), 4), (WHITE, 1):      # outlined text stays readable
+                cv2.putText(view, f"[{i + 1}/{len(images)}] {fname}   {status}",
+                            (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, thick + 1, cv2.LINE_AA)
+                cv2.putText(view, "SPACE accept   drag = draw   x none   s skip   d delete   m mask   b back   q quit",
+                            (10, view.shape[0] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, thick, cv2.LINE_AA)
             cv2.imshow("label", view)
             key = cv2.waitKey(20) & 0xFF
 

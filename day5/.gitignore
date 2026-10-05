@@ -1,3 +1,6 @@
+# training photos show people's faces: keep them off the public repo
+data/raw/
+data/labels/
 runs/
 data/dataset/
 data/dataset.yaml
