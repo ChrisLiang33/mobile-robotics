@@ -65,7 +65,7 @@ KP = 70.0            # percent of full speed per unit of normalized error
 DEADBAND = 0.08      # +-8% of half-width counts as centered
 MIN_SPEED = 30       # smallest command that actually moves the car
 MAX_SPEED = 80
-DIRECTION = +1       # flip to -1 if the car drives away from center
+DIRECTION = -1       # -1 on this car (found by driving it): +1 carried the minifig away from center
 DRIVE_STALE = 0.5    # s without a position -> stop
 DRIVE_KEEPALIVE = 0.3  # resend an unchanged speed this often: the sketch's
                        # watchdog stops the motors after 1 s of silence
