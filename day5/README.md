@@ -51,11 +51,15 @@ tools). You press SPACE to accept, drag to redraw, or `x` to say "no green
 minifig here" (writes an empty label → negative example). Nothing is saved
 without a human keypress. Output is standard YOLO `0 cx cy w h` text files.
 
-**3. Train** — `python train.py` (defaults: YOLOv8n, 40 epochs, 640 px).
-Splits 80/20 into train/val, fine-tunes from COCO-pretrained weights, copies
-the best checkpoint to `models/minifig.pt`, then validates and prints the
-metrics (also saved to `models/metrics.txt`; curves and confusion matrix in
-`runs/minifig_val/`). ~10–20 minutes on an M-series Mac.
+**3. Train** — `python train.py --epochs 60` (YOLOv8n, 640 px). Splits
+train/val by runs of consecutive frames, fine-tunes from COCO-pretrained
+weights, copies the best checkpoint to `models/minifig.pt`, then validates and
+prints the metrics (also saved to `models/metrics.txt`; curves and confusion
+matrix in `runs/minifig_val/`). It uses an NVIDIA GPU, an Apple GPU, or the
+CPU, whichever it finds. Ours ran on a lab machine with an RTX 5090: 60
+epochs in 23 seconds. On our 8 GB MacBook the same run pushed the machine deep
+into swap (about 30 s per batch), so train somewhere with memory to spare and
+copy `models/minifig.pt` back; running the model afterwards is light.
 
 **4. Track** — `python track_minifig.py`. Runs the model on the webcam,
 draws a green box and a **blue dot** on the centroid (same color as the UNO Q
@@ -130,17 +134,49 @@ Three layers, so the car can never keep driving on stale information:
 
 ## Q3 — How good is your model? Can you confuse it?
 
-Numbers from `train.py` are in `models/metrics.txt` (precision, recall,
-mAP50, mAP50-95 on the held-out validation split) with the confusion matrix
-and PR curves under `runs/minifig_val/`. Fill in what you measured:
+**The data.** 195 photos from the laptop camera, 640×360, in two rooms: 150
+with the minifig (on the car, near and far, tilted, partly out of frame) and
+44 with none (the car alone with its green jumper wires, hands, empty scene).
+
+**The test.** The photos were auto-captured half a second apart, so
+neighbours are near-duplicates; a random train/test split would leak the test
+photos into training. `train.py` instead holds out whole runs of 10
+consecutive frames: 154 photos to train on, 40 the model never saw.
+
+**The numbers** (YOLOv8n fine-tuned for 60 epochs, on those 40 unseen photos;
+`models/metrics.txt`, plots in `models/plots/`):
 
 | metric | value |
 |---|---|
-| precision | *from metrics.txt* |
-| recall | *from metrics.txt* |
-| mAP50 | *from metrics.txt* |
+| precision | 1.000 |
+| recall | 0.999 |
+| mAP50 | 0.995 |
+| mAP50-95 | 0.832 |
 
-**Confusion experiments** (run `track_minifig.py` and watch the confidence):
+Run the way the live tracker uses it (confidence ≥ 0.5): it found the minifig
+in **32 of 33** unseen photos that contain one, with **no false alarms** on
+the 7 empty ones and no extra boxes. Confidence was 0.94 at the median and
+0.62 at worst; boxes overlap the hand-checked labels by 94% (median IoU). On
+the laptop it runs at about 50 frames/s on the Apple GPU and 24 on the CPU.
+
+These scores are honest for *our setup* and optimistic for anything else:
+the unseen photos still come from the same two rooms, the same car, and the
+same afternoon.
+
+**What confuses it (measured):**
+- **A tilted minifig.** The one miss (photo 110) is the car held at an angle
+  so the figure lies sideways. Almost every training photo has it upright.
+- **A hand on the minifig.** In six photos fingers cover part of the figure
+  and we labeled those "no minifig". The model learned exactly that: it
+  reports nothing on them even at a confidence threshold of 0.10, including
+  one where the figure is almost fully visible. A labeling choice became a
+  model behavior.
+- **Green jumper wires — the confusion we designed out.** Our first labeling
+  tool boxed the car's green wires as if they were the minifig. We fixed the
+  labels and kept 44 "nothing here" photos of the car without the figure;
+  the trained model raises no false alarm on any of them.
+
+**Still to try live** (run `track_minifig.py` and watch the confidence):
 - **A different-colored minifig** (red, yellow, blue): a model trained only
   on green positives with other colors as *negatives* should ignore them.
   If you skipped negatives, it will often fire on *any* minifig-shaped thing

@@ -1,0 +1,6 @@
+model: yolov8n.pt fine-tuned 60 epochs @ 640px on 0
+dataset: 154 train / 40 val images (44 negatives); val = whole runs of 10 consecutive frames, not random frames
+precision: 1.000
+recall:    0.999
+mAP50:     0.995
+mAP50-95:  0.832
