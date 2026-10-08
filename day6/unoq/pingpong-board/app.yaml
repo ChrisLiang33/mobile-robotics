@@ -1,0 +1,5 @@
+name: Ping-Pong Board
+description: "Live ping-pong court and streak on the LED matrix, fed over MQTT by pingpong.py"
+ports: []
+bricks: []
+icon: 🏓
