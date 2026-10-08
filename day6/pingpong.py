@@ -56,10 +56,11 @@ DEFAULT_LEVEL = 1
 
 # --- court / rules ----------------------------------------------------------
 PADDLE_X = 0.92          # where the paddle plane sits (0 = far wall, 1 = right edge)
-PADDLE_HALF = 0.11       # half height of the paddle, as a fraction of the court
+PADDLE_HALF = 0.15       # half height of the paddle, as a fraction of the court
 SWING_GYRO = 300.0       # gyro magnitude (hub raw units) that counts as a swing
-SWING_WINDOW = 0.40      # s before the ball arrives in which a swing counts
-LATE_GRACE = 0.12        # s the ball waits at the paddle for a slightly late swing
+SWING_WINDOW = 0.60      # s before the ball arrives in which a swing counts
+LATE_GRACE = 0.35        # s the ball waits at the paddle for a late swing (reaction time)
+WRIST_TOP, WRIST_BOTTOM = 0.15, 0.80   # the band of the camera frame that maps onto the court
 SERVE_DELAY = 1.5        # s after a miss before the next serve
 POSE_CONF = 0.3          # wrist confidence needed to count as "hand visible"
 POSE_SMOOTH = 0.6        # EMA weight on the newest wrist reading
@@ -171,7 +172,8 @@ class Paddle:
         if c < POSE_CONF:
             self.y, self.px = None, None
             return
-        y = float(np.clip(xy[k][1] / h, 0, 1))
+        y = (xy[k][1] / h - WRIST_TOP) / (WRIST_BOTTOM - WRIST_TOP)   # comfortable hand range = whole court
+        y = float(np.clip(y, 0, 1))
         self.y = y if self.y is None else POSE_SMOOTH * y + (1 - POSE_SMOOTH) * self.y
         self.px = (int(xy[k][0]), int(xy[k][1]))
 
@@ -234,7 +236,7 @@ class Game:
         self.last_sa = (s, a)
         y0 = 0.5 if from_y is None else from_y
         target = (a + 0.5) / ZONES + self.rng.uniform(-0.07, 0.07)
-        target = float(np.clip(target, 0.04, 0.96))
+        target = float(np.clip(target, 0.10, 0.90))
         T = self.crossing_time()
         self.ball = [0.0, y0, PADDLE_X / T, (target - y0) / T]
         self.state = self.FLYING
@@ -259,7 +261,7 @@ class Game:
         self.say(f"HIT!  streak {self.streak}", now)
         offset = (self.ball[1] - paddle_y) / PADDLE_HALF            # -1 top edge .. +1 bottom edge
         T = self.crossing_time()
-        y_wall = float(np.clip(self.ball[1] + offset * 0.35, 0.04, 0.96))
+        y_wall = float(np.clip(self.ball[1] + offset * 0.35, 0.10, 0.90))
         self.ball = [PADDLE_X, self.ball[1], -PADDLE_X / T, (y_wall - self.ball[1]) / T]
         self.state = self.RETURNING
         return events
@@ -305,13 +307,16 @@ class Game:
             elif paddle_y is None:
                 events += self._miss("hand not visible", now)
             else:
-                events += self._miss("out of reach", now)
+                gap = b[1] - paddle_y
+                events += self._miss(f"out of reach - paddle {abs(gap) / PADDLE_HALF:.1f} paddles too {'high' if gap > 0 else 'low'}", now)
         elif self.state == self.ARRIVED:
             in_reach = paddle_y is not None and abs(b[1] - paddle_y) <= PADDLE_HALF
             if in_reach and swing_recent:
                 events += self._hit(paddle_y, now)
+            elif not in_reach:
+                events += self._miss("moved away before swinging", now)
             elif now - self.arrived_at > LATE_GRACE:
-                events += self._miss("no swing", now)
+                events += self._miss(f"no swing (waited {LATE_GRACE:.2f} s)", now)
         elif self.state == self.RETURNING and b[0] <= 0.0:
             events.append("wall")
             zone = 1 if paddle_y is None else min(ZONES - 1, int(paddle_y * ZONES))

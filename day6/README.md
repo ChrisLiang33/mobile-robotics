@@ -63,11 +63,11 @@ There are two decision-makers.
 from two independent sensors:
 
 ```
-in_reach = |ball_y − wrist_y| ≤ 0.11        # pose: paddle covers the ball's height
-swung    = a gyro peak ≥ 300 in the last 0.40 s   # IMU: a real swing
+in_reach = |ball_y − wrist_y| ≤ 0.15        # pose: paddle covers the ball's height
+swung    = a gyro peak ≥ 300 in the last 0.6 s    # IMU: a real swing
 ```
 Both true → **hit** (streak +1, the ball returns at an angle set by where it
-met the paddle). In reach but no swing yet → the ball waits 0.12 s for a late
+met the paddle). In reach but no swing yet → the ball waits 0.35 s for a late
 swing, then **miss, "no swing"**. Swing but not in reach → **miss, "out of
 reach"**; wrist not visible → **miss, "hand not visible"**. A miss resets the
 streak to 0; the record streak is the published score.
