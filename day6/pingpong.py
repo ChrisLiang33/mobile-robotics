@@ -122,10 +122,10 @@ class Haptics:
     """Pulses the hub's motors so you feel hits and misses. Runs in its own
     thread because BLE commands take a few ms each."""
 
-    PATTERNS = {
-        "hit":    [(70, 0.06), (-70, 0.06)],
-        "miss":   [(45, 0.09), (-45, 0.09), (45, 0.09), (-45, 0.09)],
-        "record": [(80, 0.05), (0, 0.05), (80, 0.05), (0, 0.05), (80, 0.08)],
+    PATTERNS = {                       # (speed %, seconds); sign flips make it kick, not spin
+        "hit":    [(100, 0.08), (-100, 0.08), (100, 0.08)],
+        "miss":   [(60, 0.12), (-60, 0.12), (60, 0.12), (-60, 0.12), (60, 0.12), (-60, 0.12)],
+        "record": [(100, 0.06), (0, 0.06), (100, 0.06), (0, 0.06), (100, 0.06), (0, 0.06), (100, 0.15)],
     }
 
     def __init__(self, dm, le):
@@ -403,7 +403,7 @@ def draw_panel(game, paddle, swing, now, motor_on, whistle_level=None):
     cv2.putText(p, "swing = hub gyro" if motor_on else "no hub: swing = fast hand flick (or SPACE)", (gx + 100, gy + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.42, GREY, 1, cv2.LINE_AA)
     if whistle_level is not None:
         cv2.putText(p, f"whistle level {whistle_level:.0f}", (gx + 100, gy + 68), cv2.FONT_HERSHEY_SIMPLEX, 0.42, GREY, 1, cv2.LINE_AA)
-    cv2.putText(p, "tag0 start  tag1/2/3 level   q quit  r reset", (40, PANEL_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, GREY, 1, cv2.LINE_AA)
+    cv2.putText(p, "tag0 start  tag1/2/3 level   h/m feel hit/miss   q quit  r reset", (40, PANEL_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, GREY, 1, cv2.LINE_AA)
     return p
 
 
@@ -573,6 +573,10 @@ def main():
                 game.set_level(int(chr(key)), now)
             if key == ord("r"):
                 game.reset(now)
+            if key == ord("h"):                 # feel the haptics without playing
+                haptics.play("hit"); sounds.play("ping")
+            if key == ord("m"):
+                haptics.play("miss"); sounds.play("miss")
     finally:
         running[0] = False
         if client is not None:
