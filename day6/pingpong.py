@@ -61,6 +61,7 @@ SWING_GYRO = 300.0       # gyro magnitude (hub raw units) that counts as a swing
 SWING_WINDOW = 0.60      # s before the ball arrives in which a swing counts
 LATE_GRACE = 0.35        # s the ball waits at the paddle for a late swing (reaction time)
 WRIST_TOP, WRIST_BOTTOM = 0.15, 0.80   # the band of the camera frame that maps onto the court
+WRIST_SWING_SPEED = 1.2  # frame-heights per second: without the hub, a hand flick this fast = a swing
 SERVE_DELAY = 1.5        # s after a miss before the next serve
 POSE_CONF = 0.3          # wrist confidence needed to count as "hand visible"
 POSE_SMOOTH = 0.6        # EMA weight on the newest wrist reading
@@ -155,6 +156,9 @@ class Paddle:
         self.hand = hand            # 'left' / 'right' (screen side) / 'auto'
         self.y = None
         self.px = None              # wrist pixel for drawing
+        self.speed = 0.0            # wrist speed, frame-heights per second (no-hub swing fallback)
+        self._raw = None
+        self._t = None
 
     def update(self, result, w, h):
         kp = result.keypoints
@@ -170,8 +174,13 @@ class Paddle:
             cands = [(k, c) for k, c in cands if (xy[k][0] > nose_x) == (self.hand == "right")] or cands
         k, c = max(cands, key=lambda t: t[1])
         if c < POSE_CONF:
-            self.y, self.px = None, None
+            self.y, self.px, self.speed, self._raw = None, None, 0.0, None
             return
+        now = time.monotonic()
+        raw = (float(xy[k][0]) / h, float(xy[k][1]) / h)
+        if self._raw is not None and now > self._t:
+            self.speed = math.hypot(raw[0] - self._raw[0], raw[1] - self._raw[1]) / (now - self._t)
+        self._raw, self._t = raw, now
         y = (xy[k][1] / h - WRIST_TOP) / (WRIST_BOTTOM - WRIST_TOP)   # comfortable hand range = whole court
         y = float(np.clip(y, 0, 1))
         self.y = y if self.y is None else POSE_SMOOTH * y + (1 - POSE_SMOOTH) * self.y
@@ -391,7 +400,7 @@ def draw_panel(game, paddle, swing, now, motor_on, whistle_level=None):
     for s, name in enumerate(("top", "mid", "low")):
         cv2.putText(p, name, (gx - 34, gy + s * cell + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, GREY, 1, cv2.LINE_AA)
     cv2.putText(p, f"rallies: {game.hits} hits / {game.misses} misses", (gx + 100, gy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.42, GREY, 1, cv2.LINE_AA)
-    cv2.putText(p, "IMU: hub gyro" if motor_on else "IMU off: SPACE = swing", (gx + 100, gy + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.42, GREY, 1, cv2.LINE_AA)
+    cv2.putText(p, "swing = hub gyro" if motor_on else "no hub: swing = fast hand flick (or SPACE)", (gx + 100, gy + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.42, GREY, 1, cv2.LINE_AA)
     if whistle_level is not None:
         cv2.putText(p, f"whistle level {whistle_level:.0f}", (gx + 100, gy + 68), cv2.FONT_HERSHEY_SIMPLEX, 0.42, GREY, 1, cv2.LINE_AA)
     cv2.putText(p, "tag0 start  tag1/2/3 level   q quit  r reset", (40, PANEL_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, GREY, 1, cv2.LINE_AA)
@@ -508,6 +517,9 @@ def main():
             # --- pose -> paddle
             r = pose.predict(frame, imgsz=640, device=device, conf=0.4, verbose=False)[0]
             paddle.update(r, w, h)
+
+            if dm is None and paddle.speed >= WRIST_SWING_SPEED:   # no hub: a fast hand flick is the swing
+                swing.note(SWING_GYRO * min(2.0, paddle.speed / WRIST_SWING_SPEED))
 
             # --- game step
             whistled = listener.pop() if listener else False
