@@ -66,9 +66,9 @@ SERVE_DELAY = 1.5        # s after a miss before the next serve
 POSE_CONF = 0.3          # wrist confidence needed to count as "hand visible"
 POSE_SMOOTH = 0.6        # EMA weight on the newest wrist reading
 
-# --- the hub (same card as Day 4) -------------------------------------------
-CARD_COLOR_NAME = "ORANGE"
-CARD_SERIAL = 7572
+# --- the hub: my Double Motor's connection card ------------------------------
+CARD_COLOR_NAME = "RED"
+CARD_SERIAL = 994
 
 RED, GREEN, BLUE, YELLOW, WHITE, GREY = (0, 0, 255), (0, 200, 0), (255, 120, 0), (0, 220, 255), (255, 255, 255), (120, 120, 120)
 
@@ -108,14 +108,73 @@ class Swing:
 
 def imu_loop(dm, swing, running):
     while running[0]:
-        d = dm.imu_device
         try:
+            d = dm.imu_device
             g = math.sqrt(d.gyroscopeX ** 2 + d.gyroscopeY ** 2 + d.gyroscopeZ ** 2)
-        except (TypeError, AttributeError):
+        except Exception:
             g = float("nan")
         if not math.isnan(g):
             swing.note(g, getattr(dm.imu_gesture, "gesture", None))
         time.sleep(0.02)
+
+
+class Hub:
+    """The Double Motor over Bluetooth, with reconnect-on-drop. All motor
+    commands go through run()/stop() so a dropped link never kills a thread."""
+
+    def __init__(self, dm, le, any_motor):
+        self.dm, self.le, self.any_motor = dm, le, any_motor
+        self.ok = True
+        self._lock = threading.Lock()
+        self._reconnecting = False
+
+    def _lost(self, where, err):
+        if self.ok:
+            print(f"[hub] lost the hub during {where}: {err}")
+        self.ok = False
+        with self._lock:
+            if self._reconnecting:
+                return
+            self._reconnecting = True
+        threading.Thread(target=self._reconnect, daemon=True).start()
+
+    def _reconnect(self):
+        for attempt in range(1, 31):
+            time.sleep(2.0)
+            try:
+                try:
+                    self.dm.disconnect()
+                except Exception:
+                    pass
+                if self.any_motor:
+                    self.dm.connect()
+                else:
+                    self.dm.connect(card_serial=CARD_SERIAL, card_color=getattr(self.le, f"LEGO_COLOR_{CARD_COLOR_NAME}"))
+                self.ok = True
+                print(f"[hub] reconnected (attempt {attempt})")
+                break
+            except Exception as e:
+                print(f"[hub] reconnect attempt {attempt} failed: {str(e).splitlines()[0][:80]}")
+        with self._lock:
+            self._reconnecting = False
+
+    def run(self, speed):
+        if not self.ok:
+            return
+        try:
+            self.dm.motor_run(motor=self.le.MOTOR_LEFT, speed=speed, blocking=False)
+            self.dm.motor_run(motor=self.le.MOTOR_RIGHT, speed=speed, blocking=False)
+        except Exception as e:
+            self._lost("motor_run", e)
+
+    def stop(self):
+        if not self.ok:
+            return
+        try:
+            self.dm.motor_stop(motor=self.le.MOTOR_LEFT)
+            self.dm.motor_stop(motor=self.le.MOTOR_RIGHT)
+        except Exception as e:
+            self._lost("motor_stop", e)
 
 
 class Haptics:
@@ -128,25 +187,24 @@ class Haptics:
         "record": [(100, 0.06), (0, 0.06), (100, 0.06), (0, 0.06), (100, 0.06), (0, 0.06), (100, 0.15)],
     }
 
-    def __init__(self, dm, le):
-        self.dm, self.le, self.q = dm, le, queue.Queue()
+    def __init__(self, hub):
+        self.hub, self.q = hub, queue.Queue()
         threading.Thread(target=self._run, daemon=True).start()
 
     def play(self, name):
-        if self.dm is not None:
+        if self.hub is not None:
             self.q.put(name)
 
     def _run(self):
-        le = self.le
         while True:
             name = self.q.get()
+            if not self.hub.ok:
+                continue                       # hub is away: skip the buzz, keep playing
             for speed, dur in self.PATTERNS[name]:
                 if speed:
-                    self.dm.motor_run(motor=le.MOTOR_LEFT, speed=speed, blocking=False)
-                    self.dm.motor_run(motor=le.MOTOR_RIGHT, speed=speed, blocking=False)
+                    self.hub.run(speed)
                 time.sleep(dur)
-            self.dm.motor_stop(motor=le.MOTOR_LEFT)
-            self.dm.motor_stop(motor=le.MOTOR_RIGHT)
+            self.hub.stop()
 
 
 class Paddle:
@@ -455,7 +513,8 @@ def main():
             dm.connect(card_serial=CARD_SERIAL, card_color=getattr(le, f"LEGO_COLOR_{CARD_COLOR_NAME}"))
         print("Connected.")
         threading.Thread(target=imu_loop, args=(dm, swing, running), daemon=True).start()
-    haptics = Haptics(dm, le)
+    hub = Hub(dm, le, args.any_motor) if dm is not None else None
+    haptics = Haptics(hub)
 
     client = None
     if not args.no_mqtt:
@@ -560,6 +619,8 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, YELLOW, 2, cv2.LINE_AA)
             cam = cv2.resize(view, (960, PANEL_H))
             panel = draw_panel(game, paddle, swing, now, dm is not None, listener.level if listener else None)
+            if hub is not None and not hub.ok:
+                cv2.putText(panel, "HUB DISCONNECTED - reconnecting...", (40, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, RED, 2, cv2.LINE_AA)
             cv2.imshow("ping-pong", np.hstack([cam, panel]))
 
             key = cv2.waitKey(1) & 0xFF
@@ -586,7 +647,7 @@ def main():
             listener.close()
         if dm is not None:
             try:
-                dm.motor_stop(motor=le.MOTOR_LEFT); dm.motor_stop(motor=le.MOTOR_RIGHT)
+                hub.stop()
                 dm.disconnect()
             except Exception:
                 pass
