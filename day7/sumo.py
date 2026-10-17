@@ -1,0 +1,416 @@
+"""
+Day 7 -- Sumo wrestler: LEGO Double Motor base + Color Sensor + the hub's IMU,
+decided by a BEHAVIOR TREE, with the human in the loop over the keyboard.
+
+    python sumo.py                 # hub + color sensor over Bluetooth, state over MQTT
+    python sumo.py --sim           # no hardware: e = edge, c = contact, watch the tree decide
+    python sumo.py --any-motor     # don't pin the hub to my card
+
+Sensors feeding the decision (the "sensor fusion"):
+    autonomous  Color Sensor, pointing at the floor   -> edge of the ring (blue tape)
+    autonomous  hub IMU (accelerometer + gesture)     -> contact: we hit, or got hit by, the opponent
+    teleop      keyboard (W/A/S/D)                    -> where the human wants to push
+    optional    a UNO Q bump switch publishing on BUMP_TOPIC also counts as contact
+
+The tree, highest priority first (bt.py):
+    1. OUT?        pushed out -> stop and play the sad song
+    2. EDGE?       tape under the sensor -> back up, turn away (overrides the human)
+    3. CONTACT?    bumper pressed -> shove at full power, human can bias the angle
+    4. HUMAN?      fresh keyboard command -> obey it, except forward into tape
+    5. otherwise   search: slow spin + short creeps until something happens
+
+Tape vs floor is decided by a K-NEAREST-NEIGHBORS classifier on the Color
+Sensor's readings (knn.py): press f on floor and t on tape a few times each
+to teach it your ring; until then it falls back to the sensor's own "Blue".
+
+Keys: W/S forward/back  A/D turn  SPACE stop  f/t record floor/tape sample
+      x referee: declare us out  r reset  c fake contact  e fake edge (--sim)  q quit
+"""
+
+import argparse
+import json
+import os
+import random
+import threading
+import time
+
+import cv2
+import numpy as np
+
+import bt
+import knn
+import sounds
+
+PLAYER = "ChrisLiang"
+BUMP_TOPIC = f"ME193/{PLAYER}/sumo/bump"      # optional UNO Q bumper -> us: {"bump": true/false}
+STATE_TOPIC = f"ME193/{PLAYER}/sumo/state"    # us -> anyone watching (5 Hz)
+
+# --- contact from the hub's IMU --------------------------------------------
+ACCEL_HIT = 350           # milli-g away from resting 1 g that counts as a collision
+CONTACT_HOLD = 0.6        # s a collision keeps "contact" true (the shove lasts at least this)
+
+# --- the hub: my Double Motor's card ---------------------------------------
+CARD_COLOR_NAME, CARD_SERIAL = "RED", 994
+LEFT_SIGN, RIGHT_SIGN = +1, -1                # motors are mounted mirror-image
+DIRECTION = +1                                # flip if "forward" drives the plow backwards
+
+# --- speeds (percent) -------------------------------------------------------
+SHOVE_SPEED = 100
+HUMAN_MAX = 80
+SEARCH_SPIN = 40
+SEARCH_CREEP = 45
+RETREAT_BACK = (-75, 0.55)                    # speed, seconds
+RETREAT_TURN = (60, 0.65)
+
+# --- timing -----------------------------------------------------------------
+TICK_HZ = 20
+KEY_HOLD = 0.45           # a key press counts as "held" this long (key repeat refreshes it)
+CONTACT_STALE = CONTACT_HOLD
+UNOQ_STALE = 3.0          # s without any UNO Q message -> show it as offline (optional sensor)
+OUT_TAPE_S = 1.5          # on tape this long continuously -> we've been pushed out
+OUT_RETREATS = 3          # this many edge retreats within OUT_WINDOW -> out
+OUT_WINDOW = 6.0
+RECENT_TAPE = 0.4         # the human may not drive forward within this long of seeing tape
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+KNN_PATH = os.path.join(HERE, "knn_samples.json")
+
+
+# ============================================================================
+# Blackboard + sensors
+# ============================================================================
+def new_blackboard():
+    return {
+        "edge": False, "tape_since": None, "last_tape": -1e9, "floor_class": "?", "knn_conf": 0.0,
+        "rgb": (0, 0, 0), "reflection": 0, "sensor_color": "-",
+        "contact": False, "last_bump": -1e9, "unoq_seen": -1e9, "jerk": 0.0, "gesture": -1,
+        "human": None, "human_t": -1e9,                     # (speed, turn)
+        "out": False, "out_reason": "", "retreats": [],
+        "retreat": None,                                    # ("back"|"turn", until)
+        "search": None,                                     # ("spin"|"creep", until, dir)
+        "active": "-", "trace": [], "cmd": (0, 0), "now": 0.0,
+        "mourned": False,
+    }
+
+
+def sensor_loop(cs, classifier, bb, running):
+    """Color Sensor at ~20 Hz: raw color -> KNN -> edge flag."""
+    while running[0]:
+        try:
+            rgb = cs.raw_rgb()
+            refl = cs.reflection()
+            name = cs.detect_color()
+        except Exception as e:
+            time.sleep(0.2)
+            continue
+        x = knn.features(rgb, refl)
+        label, conf = classifier.predict(x)
+        if label is None:                         # untrained: trust the sensor's color name
+            label, conf = ("tape" if name == "Blue" else "floor"), 0.5
+        now = time.monotonic()
+        bb["rgb"], bb["reflection"], bb["sensor_color"] = rgb, refl, name
+        bb["floor_class"], bb["knn_conf"], bb["_last_x"] = label, conf, x
+        set_edge(bb, label == "tape", now)
+        time.sleep(0.05)
+
+
+def imu_loop(dm, le, bb, running):
+    """Hub IMU at ~50 Hz: an acceleration spike or the hub's own COLLISION
+    gesture means we just hit something -- the opponent."""
+    import math
+    while running[0]:
+        try:
+            d = dm.imu_device
+            mag = math.sqrt(d.accelerometerX ** 2 + d.accelerometerY ** 2 + d.accelerometerZ ** 2)
+            jerk = abs(mag - 1000.0)                       # resting = 1 g = 1000 mg
+            gesture = dm.imu_gesture.gesture
+        except Exception:
+            time.sleep(0.1)
+            continue
+        if not math.isnan(jerk):
+            bb["jerk"] = jerk
+            bb["gesture"] = gesture
+            hit = jerk >= ACCEL_HIT or gesture == getattr(le, "MOTION_GESTURE_COLLISION", 2)
+            if hit and not bb["out"]:
+                bb["last_bump"] = time.monotonic()
+        time.sleep(0.02)
+
+
+def set_edge(bb, on_tape, now):
+    bb["edge"] = on_tape
+    if on_tape:
+        bb["tape_since"] = bb["tape_since"] or now
+        bb["last_tape"] = now
+    else:
+        bb["tape_since"] = None
+
+
+# ============================================================================
+# Behavior tree
+# ============================================================================
+def build_tree(drive):
+    def is_out(bb):
+        now = bb["now"]
+        if bb["tape_since"] and now - bb["tape_since"] >= OUT_TAPE_S and not bb["out"]:
+            bb["out"], bb["out_reason"] = True, f"on the tape for {OUT_TAPE_S:.0f} s"
+        recent = [t for t in bb["retreats"] if now - t <= OUT_WINDOW]
+        if len(recent) >= OUT_RETREATS and not bb["out"]:
+            bb["out"], bb["out_reason"] = True, f"{OUT_RETREATS} edge retreats in {OUT_WINDOW:.0f} s"
+        return bb["out"]
+
+    def mourn(bb):
+        drive(0, 0)
+        if not bb["mourned"]:
+            bb["mourned"] = True
+            sounds.play("sad")
+        return bt.SUCCESS
+
+    def edge_or_retreating(bb):
+        return bb["edge"] or bb["retreat"] is not None
+
+    def retreat(bb):
+        now = bb["now"]
+        if bb["retreat"] is None:                      # start: remember the event, back up
+            bb["retreats"].append(now)
+            bb["retreat"] = ("back", now + RETREAT_BACK[1])
+            bb["turn_dir"] = -1 if (bb["human"] and bb["human"][1] < 0) else (1 if bb["human"] and bb["human"][1] > 0 else random.choice((-1, 1)))
+        phase, until = bb["retreat"]
+        if phase == "back" and now >= until:            # backing done -> start turning now
+            bb["retreat"] = ("turn", now + RETREAT_TURN[1])
+            phase, until = bb["retreat"]
+        if phase == "turn" and now >= until:            # retreat finished: step aside so the
+            bb["retreat"] = None                        # selector can pick a lower branch this tick
+            return bt.FAILURE
+        if phase == "back":
+            drive(RETREAT_BACK[0], RETREAT_BACK[0])
+        else:
+            s = RETREAT_TURN[0] * bb["turn_dir"]
+            drive(s, -s)
+        return bt.RUNNING
+
+    def in_contact(bb):
+        return bb["contact"]
+
+    def shove(bb):
+        bias = 0
+        if bb["human"] and bb["now"] - bb["human_t"] <= KEY_HOLD:
+            bias = int(25 * np.sign(bb["human"][1]))     # the human can angle the push
+        drive(SHOVE_SPEED - max(0, -bias) , SHOVE_SPEED - max(0, bias))
+        return bt.SUCCESS
+
+    def human_driving(bb):
+        return bb["human"] is not None and bb["now"] - bb["human_t"] <= KEY_HOLD
+
+    def follow_human(bb):
+        speed, turn = bb["human"]
+        if speed > 0 and bb["now"] - bb["last_tape"] <= RECENT_TAPE:
+            speed = 0                                   # shared control: no driving into the tape
+            bb["veto"] = bb["now"]
+        speed = int(np.clip(speed, -HUMAN_MAX, HUMAN_MAX))
+        drive(speed + turn, speed - turn)
+        return bt.SUCCESS
+
+    def search(bb):
+        now = bb["now"]
+        if bb["search"] is None or now >= bb["search"][1]:
+            if bb["search"] and bb["search"][0] == "spin":
+                bb["search"] = ("creep", now + 0.7, bb["search"][2])
+            else:
+                bb["search"] = ("spin", now + 0.9, random.choice((-1, 1)))
+        phase, _, d = bb["search"]
+        if phase == "spin":
+            drive(SEARCH_SPIN * d, -SEARCH_SPIN * d)
+        else:
+            drive(SEARCH_CREEP, SEARCH_CREEP)
+        return bt.SUCCESS
+
+    return bt.Selector(
+        "sumo",
+        bt.Sequence("out", bt.Condition("pushed out?", is_out), bt.Action("stop + sad song", mourn)),
+        bt.Sequence("edge", bt.Condition("tape under sensor?", edge_or_retreating), bt.Action("retreat", retreat)),
+        bt.Sequence("attack", bt.Condition("bumper pressed?", in_contact), bt.Action("shove", shove)),
+        bt.Sequence("teleop", bt.Condition("human command?", human_driving), bt.Action("follow human", follow_human)),
+        bt.Action("search", search),
+    )
+
+
+# ============================================================================
+# Motors, MQTT, display
+# ============================================================================
+class Motors:
+    def __init__(self, dm, le):
+        self.dm, self.le, self.last = dm, le, None
+
+    def drive(self, left, right):
+        l = int(np.clip(left * DIRECTION, -100, 100))
+        r = int(np.clip(right * DIRECTION, -100, 100))
+        if (l, r) == self.last:
+            return
+        self.last = (l, r)
+        if self.dm is None:
+            return
+        try:
+            le = self.le
+            if l == 0:
+                self.dm.motor_stop(motor=le.MOTOR_LEFT)
+            else:
+                self.dm.motor_run(motor=le.MOTOR_LEFT, speed=LEFT_SIGN * l, blocking=False)
+            if r == 0:
+                self.dm.motor_stop(motor=le.MOTOR_RIGHT)
+            else:
+                self.dm.motor_run(motor=le.MOTOR_RIGHT, speed=RIGHT_SIGN * r, blocking=False)
+        except Exception as e:
+            print(f"[hub] motor command failed: {str(e).splitlines()[0][:80]}")
+            self.last = None
+
+
+FACE = {True: (0, 200, 0), False: (0, 0, 220)}
+
+
+def draw_hud(bb, tree_lines, sim):
+    p = np.full((560, 760, 3), 24, np.uint8)
+    now = bb["now"]
+    W, Y = (255, 255, 255), (0, 220, 255)
+    G, Rd, Gy = (0, 200, 0), (0, 0, 230), (130, 130, 130)
+    cv2.putText(p, "SUMO  -  behavior tree", (16, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.9, Y, 2, cv2.LINE_AA)
+    cv2.putText(p, f"doing: {bb['active']}", (16, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.8, G if not bb["out"] else Rd, 2, cv2.LINE_AA)
+    if bb["out"]:
+        cv2.putText(p, f"OUT - {bb['out_reason']}   (r to reset)", (16, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.65, Rd, 2, cv2.LINE_AA)
+    # sensors
+    y = 130
+    cv2.putText(p, "sensors", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, Gy, 1, cv2.LINE_AA); y += 26
+    edge_col = Rd if bb["edge"] else G
+    cv2.putText(p, f"floor: {bb['floor_class']}  (knn {bb['knn_conf']:.0%})   sensor says {bb['sensor_color']}   refl {bb['reflection']}",
+                (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, edge_col, 1, cv2.LINE_AA); y += 24
+    uno = now - bb["unoq_seen"] <= UNOQ_STALE
+    cv2.putText(p, f"contact: {'YES' if bb['contact'] else 'no'}   hub IMU jerk {bb['jerk']:.0f} mg (hit >= {ACCEL_HIT})"
+                + (f"   gesture {bb['gesture']}" if bb['gesture'] not in (-1, None) else "") + ("   + UNO Q bumper online" if uno else ""),
+                (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, Rd if bb["contact"] else W, 1, cv2.LINE_AA); y += 24
+    h = bb["human"] if bb["human"] and now - bb["human_t"] <= KEY_HOLD else None
+    veto = bb.get("veto") and now - bb["veto"] < 0.6
+    cv2.putText(p, f"human: {h if h else 'no input'}" + ("   VETOED: tape ahead" if veto else ""), (16, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, Rd if veto else W, 1, cv2.LINE_AA); y += 24
+    cv2.putText(p, f"wheels: L {bb['cmd'][0]:+4d}  R {bb['cmd'][1]:+4d}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, W, 1, cv2.LINE_AA); y += 30
+    # the tree with the active path highlighted
+    cv2.putText(p, "tree (top = highest priority)", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, Gy, 1, cv2.LINE_AA); y += 24
+    for line in tree_lines:
+        hot = any(t in line for t in bb["trace"]) and line.strip().split(": ")[-1] in bb["trace"]
+        cv2.putText(p, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, G if hot else Gy, 1, cv2.LINE_AA); y += 20
+    # keys
+    cv2.putText(p, "W/S fwd/back  A/D turn  SPACE stop  f/t teach floor/tape  c fake contact" + ("  e fake edge" if sim else ""),
+                (16, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.45, Gy, 1, cv2.LINE_AA)
+    cv2.putText(p, "x referee: OUT   r reset   q quit", (16, 544), cv2.FONT_HERSHEY_SIMPLEX, 0.45, Gy, 1, cv2.LINE_AA)
+    return p
+
+
+def main():
+    ap = argparse.ArgumentParser(description="LEGO sumo wrestler with a behavior tree")
+    ap.add_argument("--sim", action="store_true", help="no hardware; keys e/c fake the sensors")
+    ap.add_argument("--any-motor", action="store_true")
+    ap.add_argument("--no-mqtt", action="store_true")
+    ap.add_argument("--frames", type=int, default=0, help="stop after N ticks (testing)")
+    args = ap.parse_args()
+
+    bb = new_blackboard()
+    classifier = knn.KNN(k=5, path=KNN_PATH)
+    running = [True]
+    dm = cs = le = None
+    if not args.sim:
+        import legoeducation as le
+        from lelib import doubleMotor, colorSensor
+        dm = doubleMotor()
+        print("Connecting to the Double Motor...")
+        if args.any_motor:
+            dm.connect()
+        else:
+            dm.connect(card_serial=CARD_SERIAL, card_color=getattr(le, f"LEGO_COLOR_{CARD_COLOR_NAME}"))
+        cs = colorSensor()
+        print("Connecting to the Color Sensor...")
+        cs.connect(card_serial=None)
+        print("Connected.")
+        threading.Thread(target=sensor_loop, args=(cs, classifier, bb, running), daemon=True).start()
+        threading.Thread(target=imu_loop, args=(dm, le, bb, running), daemon=True).start()
+    motors = Motors(dm, le)
+
+    def drive(l, r):
+        bb["cmd"] = (int(l), int(r))
+        motors.drive(l, r)
+
+    client = None
+    if not args.no_mqtt:
+        from mqttlib import MQTTClient
+        client = MQTTClient()
+        client.connect()
+
+        def on_bump(topic, payload):
+            try:
+                d = json.loads(payload)
+            except ValueError:
+                return
+            bb["unoq_seen"] = time.monotonic()
+            if d.get("bump"):
+                bb["last_bump"] = time.monotonic()
+        client.subscribe(BUMP_TOPIC, on_bump)
+        print(f"state -> {STATE_TOPIC}   (optional UNO Q bumper <- {BUMP_TOPIC})")
+
+    tree = build_tree(drive)
+    tree_lines = bt.describe(tree)
+    print("\n".join(tree_lines))
+    last_state_pub = 0.0
+    n = 0
+    try:
+        while True:
+            now = time.monotonic()
+            bb["now"] = now
+            bb["contact"] = now - bb["last_bump"] <= CONTACT_STALE
+            bb["trace"] = []
+            tree.tick(bb)
+            n += 1
+
+            if client is not None and now - last_state_pub >= 0.2:
+                client.publish(STATE_TOPIC, json.dumps({
+                    "doing": bb["active"], "edge": bb["edge"], "contact": bb["contact"],
+                    "out": bb["out"], "human": bb["human"] if bb["human"] and now - bb["human_t"] <= KEY_HOLD else None,
+                    "cmd": bb["cmd"]}))
+                last_state_pub = now
+
+            cv2.imshow("sumo", draw_hud(bb, tree_lines, args.sim))
+            key = cv2.waitKey(int(1000 / TICK_HZ)) & 0xFF
+            if key in (27, ord("q")) or (args.frames and n >= args.frames):
+                break
+            if key in (ord("w"), ord("s"), ord("a"), ord("d"), 82, 84, 81, 83):
+                speed, turn = (bb["human"] or (0, 0)) if now - bb["human_t"] <= KEY_HOLD else (0, 0)
+                if key in (ord("w"), 82): speed, turn = HUMAN_MAX, 0
+                if key in (ord("s"), 84): speed, turn = -HUMAN_MAX, 0
+                if key in (ord("a"), 81): turn = -45
+                if key in (ord("d"), 83): turn = 45
+                bb["human"], bb["human_t"] = (speed, turn), now
+            if key == ord(" "):
+                bb["human"], bb["human_t"] = (0, 0), now
+            if key == ord("c"):
+                bb["last_bump"] = now
+            if key == ord("e") and args.sim:
+                set_edge(bb, not bb["edge"], now)
+            if key == ord("x"):
+                bb["out"], bb["out_reason"] = True, "referee"
+            if key == ord("r"):
+                bb.update(out=False, out_reason="", mourned=False, retreats=[], retreat=None, tape_since=None)
+            if key in (ord("f"), ord("t")) and "_last_x" in bb:
+                classifier.add(bb["_last_x"], "floor" if key == ord("f") else "tape")
+                print("knn samples:", classifier.counts())
+    finally:
+        running[0] = False
+        drive(0, 0)
+        if client is not None:
+            client.disconnect()
+        for dev in (dm, cs):
+            if dev is not None:
+                try:
+                    dev.disconnect()
+                except Exception:
+                    pass
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
