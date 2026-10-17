@@ -3,17 +3,28 @@
 *ME193 — Chris Liang*
 
 A LEGO Double Motor base with a plow, a Color Sensor looking at the floor,
-and the hub's own IMU, driven by a **behavior tree** on the laptop. The human
-steers with the keyboard, but the tree has the final say: it will not let
-you drive onto the tape, and it shoves at full power the moment it feels
-contact. First one pushed out of the blue-tape ring loses — and plays the
-sad trombone.
+and the hub's own IMU, driven by a **behavior tree** that runs on the **UNO Q
+riding on the car**. The UNO Q talks Bluetooth to the LEGO hub and sensor,
+publishes the robot's state over MQTT, and announces over MQTT when it has
+lost. The human steers from the laptop with the keyboard — the keys travel
+over MQTT — but the tree has the final say: it will not let you drive onto
+the tape, and it shoves at full power the moment it feels contact. First one
+pushed out of the blue-tape ring loses, and the laptop plays the sad trombone
+when the "lost" message arrives.
+
+```
+ laptop: sumo_remote.py  --keys-->  MQTT  --keys-->  UNO Q: sumo.py --headless  --BLE-->  Double Motor + Color Sensor
+         (HUD, sad song) <--state--       <--state, "ChrisLiang lost"--  (behavior tree, KNN)
+```
+(`sumo.py` without `--headless` also runs the whole thing on the laptop, as a fallback.)
 
 ## Files
 
 | File | What it is |
 |------|------------|
-| `sumo.py` | the wrestler: sensors → blackboard → behavior tree → motors, keyboard teleop, HUD, MQTT state |
+| `sumo.py` | the brain: sensors → blackboard → behavior tree → motors; `--headless` on the UNO Q (teleop over MQTT), or with a window on the laptop |
+| `sumo_remote.py` | laptop side: sends key presses to the robot over MQTT, shows its state, plays the sad song on "lost" |
+| `unoq_setup.sh` | one-time setup on the UNO Q: Python environment with the LEGO Bluetooth library, Bluetooth check |
 | `bt.py` | the behavior-tree library (Selector, Sequence, Condition, Action, RUNNING) |
 | `knn.py` | K-nearest-neighbors classifier: Color Sensor reading → "floor" or "tape" |
 | `knn_samples.json` | the readings you taught it (created by pressing `f`/`t` in the HUD) |
@@ -28,10 +39,20 @@ sad trombone.
   well within that.
 
 ```bash
+# on the laptop
 pip install legoeducation opencv-python numpy pyaudio paho-mqtt
 python sumo.py --sim          # no hardware: watch the tree react to fake sensors (e = edge, c = contact)
-python sumo.py                # the real thing (hub pinned to my red card 994; --any-motor to skip that)
+
+# on the UNO Q (once): copy the folder up and run the setup script
+scp -r day7 arduino@<board-ip>:~/sumo && ssh arduino@<board-ip> 'bash ~/sumo/unoq_setup.sh'
+# game day: brain on the board, remote on the laptop
+ssh arduino@<board-ip> '~/sumo/.venv/bin/python ~/sumo/sumo.py --headless'     # (--any-motor to skip my card)
+python sumo_remote.py
 ```
+
+MQTT topics: `ME193/ChrisLiang/sumo/teleop` (laptop → robot, key presses),
+`ME193/ChrisLiang/sumo/state` (robot → laptop, 5×/s), `ME193/ChrisLiang/sumo/result`
+(robot → everyone: `ChrisLiang lost: <reason>`).
 
 **Teach it your ring first:** with the robot on plain floor press `f` a few
 times, on the tape press `t` a few times. The HUD shows the KNN's verdict
@@ -80,17 +101,19 @@ floor color don't matter.
    means we just hit or got hit by the opponent; "contact" stays true for
    0.6 s and triggers the full-power shove.
 
-(An optional third: a UNO Q bump switch on the plow publishing to
-`ME193/ChrisLiang/sumo/bump` also counts as contact. The assignment text asks
-for the UNO Q as a sensor; we did not mount one on this build.)
+The UNO Q is the computer that reads both of these over Bluetooth, runs the
+tree, and reports over MQTT. (A bump switch wired to the UNO Q and published
+on `ME193/ChrisLiang/sumo/bump` would count as contact too; the code accepts
+it, but this build doesn't carry one.)
 
 ## Q3 — What information can the human give via teleoperation / shared control?
 
 The keyboard gives the wrestler **intent, not control**:
 
-- `W/S/A/D` set a wanted speed and turn. A key press counts for 0.45 s, so
-  holding a key keeps it alive and letting go stops. This is the lowest
-  priority branch: the robot only follows it when nothing more urgent is true.
+- `W/S/A/D` on the laptop set a wanted speed and turn; each press travels to
+  the robot over MQTT and counts for 0.45 s, so holding a key keeps it alive
+  and letting go stops. This is the lowest priority branch: the robot only
+  follows it when nothing more urgent is true.
 - **Vetoed near the edge**: if the human asks for forward within 0.4 s of the
   sensor seeing tape, the speed is zeroed and the HUD shows "VETOED: tape
   ahead". Turning is still allowed.
@@ -137,5 +160,7 @@ opinion wins.
 - Plastic wheels on a smooth floor: traction, not power, limits the push.
 - The Color Sensor needs to ride at a fixed height; a plow that lifts the
   front wheels also lifts the sensor and blinds it.
-- Bluetooth latency and a laptop in the loop: if the link drops, the hub
-  keeps the last command — the retreat timers are short on purpose.
+- Two radio links in the loop: WiFi/MQTT for the human's keys (a broker
+  round trip is ~100 ms, so teleop feels laggy) and Bluetooth for the motors.
+  If Bluetooth drops, the hub keeps its last command — the retreat timers are
+  short on purpose.

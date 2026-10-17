@@ -5,6 +5,8 @@ decided by a BEHAVIOR TREE, with the human in the loop over the keyboard.
     python sumo.py                 # hub + color sensor over Bluetooth, state over MQTT
     python sumo.py --sim           # no hardware: e = edge, c = contact, watch the tree decide
     python sumo.py --any-motor     # don't pin the hub to my card
+    python sumo.py --headless      # on the UNO Q (no window): keys arrive over MQTT from
+                                   # sumo_remote.py on the laptop; state and "lost" go out over MQTT
 
 Sensors feeding the decision (the "sensor fusion"):
     autonomous  Color Sensor, pointing at the floor   -> edge of the ring (blue tape)
@@ -34,8 +36,12 @@ import random
 import threading
 import time
 
-import cv2
 import numpy as np
+
+try:
+    import cv2
+except ImportError:            # headless board: no window, keys come over MQTT
+    cv2 = None
 
 import bt
 import knn
@@ -43,7 +49,9 @@ import sounds
 
 PLAYER = "ChrisLiang"
 BUMP_TOPIC = f"ME193/{PLAYER}/sumo/bump"      # optional UNO Q bumper -> us: {"bump": true/false}
-STATE_TOPIC = f"ME193/{PLAYER}/sumo/state"    # us -> anyone watching (5 Hz)
+STATE_TOPIC = f"ME193/{PLAYER}/sumo/state"    # us -> the laptop remote + anyone watching (5 Hz)
+TELEOP_TOPIC = f"ME193/{PLAYER}/sumo/teleop"  # laptop remote -> us: {"key": "w"}
+RESULT_TOPIC = f"ME193/{PLAYER}/sumo/result"  # us -> everyone: who lost
 
 # --- contact from the hub's IMU --------------------------------------------
 ACCEL_HIT = 350           # milli-g away from resting 1 g that counts as a collision
@@ -303,13 +311,49 @@ def draw_hud(bb, tree_lines, sim):
     return p
 
 
+def handle_key(ch, bb, classifier, sim):
+    """One teleop key, from the local window or from the laptop over MQTT."""
+    now = time.monotonic()
+    if ch in ("w", "s", "a", "d"):
+        speed, turn = (bb["human"] or (0, 0)) if now - bb["human_t"] <= KEY_HOLD else (0, 0)
+        if ch == "w": speed, turn = HUMAN_MAX, 0
+        if ch == "s": speed, turn = -HUMAN_MAX, 0
+        if ch == "a": turn = -45
+        if ch == "d": turn = 45
+        bb["human"], bb["human_t"] = (speed, turn), now
+    elif ch == " ":
+        bb["human"], bb["human_t"] = (0, 0), now
+    elif ch == "c":
+        bb["last_bump"] = now
+    elif ch == "e" and sim:
+        set_edge(bb, not bb["edge"], now)
+    elif ch == "x":
+        bb["out"], bb["out_reason"] = True, "referee"
+    elif ch == "r":
+        bb.update(out=False, out_reason="", mourned=False, announced=False, retreats=[], retreat=None, tape_since=None)
+    elif ch in ("f", "t") and "_last_x" in bb:
+        classifier.add(bb["_last_x"], "floor" if ch == "f" else "tape")
+        print("knn samples:", classifier.counts())
+
+
+def state_message(bb, classifier):
+    now = bb["now"]
+    return {"doing": bb["active"], "edge": bb["edge"], "contact": bb["contact"], "out": bb["out"],
+            "out_reason": bb["out_reason"], "human": bb["human"] if bb["human"] and now - bb["human_t"] <= KEY_HOLD else None,
+            "cmd": bb["cmd"], "floor": bb["floor_class"], "knn_conf": round(bb["knn_conf"], 2),
+            "knn_counts": classifier.counts(), "sensor_color": bb["sensor_color"], "reflection": bb["reflection"],
+            "jerk": round(bb["jerk"]), "veto": bool(bb.get("veto") and now - bb["veto"] < 0.6)}
+
+
 def main():
     ap = argparse.ArgumentParser(description="LEGO sumo wrestler with a behavior tree")
     ap.add_argument("--sim", action="store_true", help="no hardware; keys e/c fake the sensors")
     ap.add_argument("--any-motor", action="store_true")
     ap.add_argument("--no-mqtt", action="store_true")
+    ap.add_argument("--headless", action="store_true", help="no window (for the UNO Q); teleop over MQTT")
     ap.add_argument("--frames", type=int, default=0, help="stop after N ticks (testing)")
     args = ap.parse_args()
+    headless = args.headless or cv2 is None
 
     bb = new_blackboard()
     classifier = knn.KNN(k=5, path=KNN_PATH)
@@ -351,7 +395,16 @@ def main():
             if d.get("bump"):
                 bb["last_bump"] = time.monotonic()
         client.subscribe(BUMP_TOPIC, on_bump)
-        print(f"state -> {STATE_TOPIC}   (optional UNO Q bumper <- {BUMP_TOPIC})")
+
+        def on_teleop(topic, payload):
+            try:
+                ch = json.loads(payload).get("key", "")
+            except ValueError:
+                ch = payload
+            if ch:
+                handle_key(str(ch)[:1], bb, classifier, args.sim)
+        client.subscribe(TELEOP_TOPIC, on_teleop)
+        print(f"state -> {STATE_TOPIC}   teleop <- {TELEOP_TOPIC}   result -> {RESULT_TOPIC}")
 
     tree = build_tree(drive)
     tree_lines = bt.describe(tree)
@@ -367,37 +420,34 @@ def main():
             tree.tick(bb)
             n += 1
 
+            if bb["out"] and not bb.get("announced"):
+                bb["announced"] = True
+                msg = f"{PLAYER} lost: {bb['out_reason']}"
+                print("*** " + msg)
+                if client is not None:
+                    client.publish(RESULT_TOPIC, msg)
             if client is not None and now - last_state_pub >= 0.2:
-                client.publish(STATE_TOPIC, json.dumps({
-                    "doing": bb["active"], "edge": bb["edge"], "contact": bb["contact"],
-                    "out": bb["out"], "human": bb["human"] if bb["human"] and now - bb["human_t"] <= KEY_HOLD else None,
-                    "cmd": bb["cmd"]}))
+                client.publish(STATE_TOPIC, json.dumps(state_message(bb, classifier)))
                 last_state_pub = now
+
+            if headless:
+                if n % TICK_HZ == 0:
+                    print(f"doing {bb['active']:14s} floor {bb['floor_class']:5s} contact {bb['contact']!s:5s} "
+                          f"human {bb['human'] if bb['human'] and now - bb['human_t'] <= KEY_HOLD else '-'}  wheels {bb['cmd']}")
+                time.sleep(1.0 / TICK_HZ)
+                if args.frames and n >= args.frames:
+                    break
+                continue
 
             cv2.imshow("sumo", draw_hud(bb, tree_lines, args.sim))
             key = cv2.waitKey(int(1000 / TICK_HZ)) & 0xFF
             if key in (27, ord("q")) or (args.frames and n >= args.frames):
                 break
-            if key in (ord("w"), ord("s"), ord("a"), ord("d"), 82, 84, 81, 83):
-                speed, turn = (bb["human"] or (0, 0)) if now - bb["human_t"] <= KEY_HOLD else (0, 0)
-                if key in (ord("w"), 82): speed, turn = HUMAN_MAX, 0
-                if key in (ord("s"), 84): speed, turn = -HUMAN_MAX, 0
-                if key in (ord("a"), 81): turn = -45
-                if key in (ord("d"), 83): turn = 45
-                bb["human"], bb["human_t"] = (speed, turn), now
-            if key == ord(" "):
-                bb["human"], bb["human_t"] = (0, 0), now
-            if key == ord("c"):
-                bb["last_bump"] = now
-            if key == ord("e") and args.sim:
-                set_edge(bb, not bb["edge"], now)
-            if key == ord("x"):
-                bb["out"], bb["out_reason"] = True, "referee"
-            if key == ord("r"):
-                bb.update(out=False, out_reason="", mourned=False, retreats=[], retreat=None, tape_since=None)
-            if key in (ord("f"), ord("t")) and "_last_x" in bb:
-                classifier.add(bb["_last_x"], "floor" if key == ord("f") else "tape")
-                print("knn samples:", classifier.counts())
+            arrows = {82: "w", 84: "s", 81: "a", 83: "d"}
+            if key in arrows:
+                handle_key(arrows[key], bb, classifier, args.sim)
+            elif key != 255:
+                handle_key(chr(key), bb, classifier, args.sim)
     finally:
         running[0] = False
         drive(0, 0)
@@ -409,7 +459,8 @@ def main():
                     dev.disconnect()
                 except Exception:
                     pass
-        cv2.destroyAllWindows()
+        if cv2 is not None:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
