@@ -66,7 +66,7 @@ ACCEL_HIT = 350           # milli-g away from resting 1 g that counts as a colli
 CONTACT_HOLD = 0.6        # s a collision keeps "contact" true (the shove lasts at least this)
 
 # --- my LEGO devices' connection cards ---------------------------------------
-CARD_COLOR_NAME, CARD_SERIAL = "RED", 994           # Double Motor
+CARD_COLOR_NAME, CARD_SERIAL = "BLUE", 1392          # Double Motor (shares the card with the sensor)
 COLOR_CARD_NAME, COLOR_CARD_SERIAL = "BLUE", 1392    # Color Sensor
 LEFT_SIGN, RIGHT_SIGN = +1, -1                # motors are mounted mirror-image
 DIRECTION = +1                                # flip if "forward" drives the plow backwards
