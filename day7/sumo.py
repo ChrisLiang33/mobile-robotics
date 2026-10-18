@@ -93,6 +93,8 @@ OUT_TAPE_S = 1.5          # on tape this long continuously -> we've been pushed 
 OUT_RETREATS = 3          # this many edge retreats within OUT_WINDOW -> out
 OUT_WINDOW = 6.0
 RECENT_TAPE = 0.4         # the human may not drive forward within this long of seeing tape
+EDGE_AGREE = 3            # consecutive sensor readings (~150 ms) that must agree before the
+                          # edge flag flips -- a single dip of the car doesn't count as tape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KNN_PATH = os.path.join(HERE, "knn_samples.json")
@@ -133,7 +135,12 @@ def sensor_loop(cs, classifier, bb, running):
         now = time.monotonic()
         bb["rgb"], bb["reflection"], bb["sensor_color"] = rgb, refl, name
         bb["floor_class"], bb["knn_conf"], bb["_last_x"] = label, conf, x
-        set_edge(bb, label == "tape", now)
+        # debounce: the flag only flips after EDGE_AGREE readings in a row agree
+        votes = bb.setdefault("_votes", [])
+        votes.append(label == "tape")
+        del votes[:-EDGE_AGREE]
+        if len(votes) == EDGE_AGREE and all(v == votes[0] for v in votes):
+            set_edge(bb, votes[0], now)
         time.sleep(0.05)
 
 
@@ -267,7 +274,8 @@ def build_tree(drive):
     return bt.Selector(
         "sumo",
         bt.Sequence("out", bt.Condition("pushed out?", is_out), bt.Action("stop + sad song", mourn)),
-        bt.Sequence("edge", bt.Condition("tape under sensor?", edge_or_retreating), bt.Action("retreat", retreat)),
+        bt.Sequence("edge", bt.Condition("tape under sensor?", edge_or_retreating),
+                    bt.Action("escape forward" if SENSOR_AT == "back" else "retreat", retreat)),
         bt.Sequence("charge", bt.Condition("opponent in range?", opponent_ahead), bt.Action("charge", charge)),
         bt.Sequence("attack", bt.Condition("contact (IMU)?", in_contact), bt.Action("shove", shove)),
         bt.Sequence("teleop", bt.Condition("human command?", human_driving), bt.Action("follow human", follow_human)),
@@ -308,6 +316,11 @@ class Motors:
 FACE = {True: (0, 200, 0), False: (0, 0, 220)}
 
 
+def classifier_counts(bb):
+    c = bb.get("_knn_counts") or {}
+    return f"floor {c.get('floor', 0)} / tape {c.get('tape', 0)}"
+
+
 def draw_hud(bb, tree_lines, sim):
     p = np.full((560, 760, 3), 24, np.uint8)
     now = bb["now"]
@@ -326,7 +339,7 @@ def draw_hud(bb, tree_lines, sim):
     y = 130
     cv2.putText(p, "sensors", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, Gy, 1, cv2.LINE_AA); y += 26
     edge_col = Rd if bb["edge"] else G
-    cv2.putText(p, f"floor: {bb['floor_class']}  (knn {bb['knn_conf']:.0%})   sensor says {bb['sensor_color']}   refl {bb['reflection']}",
+    cv2.putText(p, f"floor: {bb['floor_class']}  (knn {bb['knn_conf']:.0%}, samples {classifier_counts(bb)})   refl {bb['reflection']}  rgb {tuple(int(v) for v in bb['rgb'])}",
                 (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, edge_col, 1, cv2.LINE_AA); y += 24
     uno = now - bb["unoq_seen"] <= UNOQ_STALE
     rng = bb["range_cm"]
@@ -380,7 +393,8 @@ def handle_key(ch, bb, classifier, sim):
         bb.update(out=False, out_reason="", mourned=False, announced=False, retreats=[], retreat=None, tape_since=None)
     elif ch in ("f", "t") and "_last_x" in bb:
         classifier.add(bb["_last_x"], "floor" if ch == "f" else "tape")
-        print("knn samples:", classifier.counts())
+        bb["_knn_counts"] = classifier.counts()
+        print("knn samples:", classifier.counts(), " reading:", bb["rgb"], "refl", bb["reflection"])
 
 
 def state_message(bb, classifier):
@@ -405,6 +419,7 @@ def main():
 
     bb = new_blackboard()
     classifier = knn.KNN(k=5, path=KNN_PATH)
+    bb["_knn_counts"] = classifier.counts()
     running = [True]
     dm = cs = le = None
     if not args.sim:
