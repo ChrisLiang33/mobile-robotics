@@ -86,7 +86,7 @@ twice: three consecutive sensor readings must agree before the edge flag
 flips, and the flag must hold for 0.3 s before the tree calls it; a single
 bounce of the car over the tape doesn't end the match. The ultrasonic branch
 is the "auto power-up": the human drives at up to 80%, but the moment the
-UNO Q reports the opponent inside 45 cm, the tree takes over and goes to
+UNO Q reports the opponent inside 20 cm, the tree takes over and goes to
 100%; a stale reading (no message for 0.5 s) counts as "don't know", never as
 "opponent". The tree only ever moves the car on its own because of the
 ultrasonic; with nothing in range and no key held, it sits still.
