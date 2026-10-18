@@ -8,9 +8,9 @@ over MQTT. At the back, a **Color Sensor looking at the floor** for the blue
 tape. The laptop runs a **behavior tree**: it holds the Bluetooth links to the
 LEGO hub and Color Sensor, listens to the UNO Q over MQTT, and takes the
 human's keyboard input — then decides. The tree has the final say: it charges
-at full power when the ultrasonic sees the opponent in range, it will not let
-you drive onto the tape, and when it's been pushed out it stops, plays the sad
-trombone and announces the loss over MQTT.
+at full power when the ultrasonic sees the opponent in range, and the moment
+the rear sensor finds tape under the car it declares the match lost: stops,
+plays the sad trombone and announces it over MQTT.
 
 ```
  UNO Q + HC-SR04 on the plow  --MQTT "cm"-->  laptop: sumo.py (behavior tree, KNN, keyboard)  --BLE-->  Double Motor
@@ -72,24 +72,24 @@ priority:
 
 ```
 Selector: sumo
-  Sequence: out      pushed out?             -> stop, play the sad song, publish "lost"
-  Sequence: edge     tape under rear sensor? -> escape forward 0.6 s (overrides the human)
-  Sequence: charge   opponent < 45 cm ahead? -> charge at 100% (the ultrasonic "auto power-up"), human may angle it ±20
-  Sequence: attack   contact (IMU)?          -> shove at 100%, human may angle it ±25
-  Sequence: teleop   fresh human command?    -> obey it, capped at 80%, EXCEPT forward within 0.4 s of tape
-  Action:   search                           -> slow spin 0.9 s / creep forward 0.7 s, repeat
+  Sequence: out      tape under the rear sensor for 0.3 s? -> stop, play the sad song, publish "lost"
+  Sequence: charge   opponent < 45 cm ahead (ultrasonic)?  -> charge at 100% (the "auto power-up"); A/D angle it ±20
+  Sequence: teleop   fresh human command?                  -> drive it, capped at 80%
+  Action:   idle                                           -> sit still (SEARCH_WHEN_IDLE=True: spin and creep instead)
 ```
 
-Two details make it a real tree rather than a list of ifs: the **escape is a
-RUNNING action** — once started it finishes its 0.6 s of forward drive even if
-the tape is already gone from under the sensor, then steps aside so lower
-branches can act in the same tick; and the **"out" rule is derived from sensor
-history**: on the tape for 1.5 s straight, or three escapes inside 6 s, means
-we're being pushed out and the tree stops the motors itself (the referee key
-`x` does the same). The ultrasonic branch is the "auto power-up": the human
-drives at up to 80%, but the moment the UNO Q reports the opponent inside 45
-cm, the tree takes over and goes to 100%; a stale reading (no message for
-0.5 s) counts as "don't know", never as "opponent".
+Why this order: the Color Sensor sits at the **back** of the car, so tape
+under it means we've already been shoved to the edge — there's no recovering
+from that in sumo, so it's the loss condition itself, not something to
+escape from (the referee key `x` declares the same thing). It's debounced
+twice: three consecutive sensor readings must agree before the edge flag
+flips, and the flag must hold for 0.3 s before the tree calls it; a single
+bounce of the car over the tape doesn't end the match. The ultrasonic branch
+is the "auto power-up": the human drives at up to 80%, but the moment the
+UNO Q reports the opponent inside 45 cm, the tree takes over and goes to
+100%; a stale reading (no message for 0.5 s) counts as "don't know", never as
+"opponent". The tree only ever moves the car on its own because of the
+ultrasonic; with nothing in range and no key held, it sits still.
 
 The second algorithm from the week's list, **K-nearest-neighbors**, decides
 the "tape under sensor?" condition: each Color Sensor reading becomes a
@@ -105,12 +105,15 @@ floor color don't matter.
    the opponent is in front of the plow: the tree charges at full power on
    its own. The UNO Q is the sensor the assignment asks for, talking over MQTT.
 2. **The Color Sensor**, pointed at the floor at the back, read ~20×/s over
-   Bluetooth. It feeds the KNN and triggers the escape and the "out"
-   detection. It acts with no human input and overrides the human.
-3. **The hub's IMU** (accelerometer + its built-in gesture detector). A jolt
-   of ≥ 350 milli-g away from gravity, or the hub's own COLLISION gesture,
-   means we're in contact with the opponent; "contact" stays true for 0.6 s
-   and triggers the full-power shove even when the ultrasonic can't see them.
+   Bluetooth. It feeds the KNN and is the "out" detector. It acts with no
+   human input and overrides the human. The sensor never labels the tape
+   "Blue" itself (it's too dim a target for its color classifier), but at a
+   fixed height the floor reflects bright and the tape dark, and the KNN
+   learns that from the readings we teach it.
+
+(The hub's IMU is read too — a jolt means contact — and a full-power "shove"
+branch can be switched on with `USE_IMU_CONTACT`; it's off for the match
+because the car's own bumps triggered it.)
 
 ## Q3 — What information can the human give via teleoperation / shared control?
 
@@ -119,14 +122,11 @@ The keyboard gives the wrestler **intent, not control**:
 - `W/S/A/D` set a wanted speed and turn. A key press counts for 0.45 s, so
   holding a key keeps it alive and letting go stops. This is the lowest
   priority branch: the robot only follows it when nothing more urgent is true.
-- **Vetoed near the edge**: if the human asks for forward within 0.4 s of the
-  sensor seeing tape, the speed is zeroed and the HUD shows "VETOED: tape
-  ahead". Turning is still allowed.
-- **Angling the charge and the shove**: when the ultrasonic or the IMU puts
-  the robot at 100% on its own, a held `A` or `D` tilts the push by 20–25% on
-  one wheel — the human picks the angle, the robot picks the power.
-- **The human cannot stop a charge or an escape**, and cannot be driven out
-  by the human either: forward within 0.4 s of tape is refused.
+- **Angling the charge**: when the ultrasonic puts the robot at 100% on its
+  own, a held `A` or `D` tilts the push by 20% on one wheel — the human picks
+  the angle, the robot picks the power. The human cannot cancel a charge.
+- **Manual mode** (`m`): before the match the tree only *shows* what it
+  would do while the keys drive, so each sensor can be checked on its own.
 - `x` is the referee: declare us out, stop, sad song.
 
 That's the sensor fusion the rubric asks for: the same tick combines the
@@ -150,8 +150,11 @@ tree decides whose opinion wins.
 - Ultrasonic readings off a sloped or narrow LEGO opponent can be noisy; one
   reading under 45 cm is enough to charge, so a false echo wastes a charge.
 - One floor sensor at the back means it detects being pushed out backwards
-  well, but when the human drives forward over the edge the front of the car
-  is already across the line before the sensor sees tape.
+  well, but if the human drives forward over the edge the front of the car
+  is across the line before the sensor sees tape — and then it's "out" by
+  its own rule. Driving is the human's responsibility near the front edge.
+- "Out" is a judgment from one sensor: 0.3 s of tape under the back. A dark
+  patch on the floor, or the sensor lifting off the floor, looks the same.
 - "Out" is inferred, not measured: being pushed out slowly across the tape
   looks like a long retreat sequence. Three retreats in six seconds or 1.5 s
   on the tape is a heuristic and can fire early in a scrappy match.

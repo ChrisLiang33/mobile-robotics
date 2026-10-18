@@ -14,11 +14,12 @@ Sensors feeding the decision (the "sensor fusion"):
     teleop      keyboard (W/A/S/D)                                 -> where the human wants to push
 
 The tree, highest priority first (bt.py):
-    1. OUT?        pushed out -> stop and play the sad song
-    2. EDGE?       tape under the sensor -> back up, turn away (overrides the human)
-    3. CONTACT?    bumper pressed -> shove at full power, human can bias the angle
-    4. HUMAN?      fresh keyboard command -> obey it, except forward into tape
-    5. otherwise   search: slow spin + short creeps until something happens
+    1. OUT?        tape under the rear sensor for OUT_TAPE_S -> we've been pushed to
+                   the edge: stop, play the sad song, publish "lost"
+    2. OPPONENT?   ultrasonic sees them within CHARGE_CM -> charge at 100%
+                   (the auto power-up; A/D can angle it, the human can't cancel it)
+    3. HUMAN?      fresh keyboard command -> drive it
+    4. otherwise   sit still (or search, if SEARCH_WHEN_IDLE)
 
 Tape vs floor is decided by a K-NEAREST-NEIGHBORS classifier on the Color
 Sensor's readings (knn.py): press f on floor and t on tape a few times each
@@ -89,10 +90,9 @@ TICK_HZ = 20
 KEY_HOLD = 0.45           # a key press counts as "held" this long (key repeat refreshes it)
 CONTACT_STALE = CONTACT_HOLD
 UNOQ_STALE = 3.0          # s without any UNO Q message -> show it as offline (optional sensor)
-OUT_TAPE_S = 1.5          # on tape this long continuously -> we've been pushed out
-OUT_RETREATS = 3          # this many edge retreats within OUT_WINDOW -> out
-OUT_WINDOW = 6.0
-RECENT_TAPE = 0.4         # the human may not drive forward within this long of seeing tape
+OUT_TAPE_S = 0.3          # tape under the rear sensor this long -> pushed to the edge, out
+SEARCH_WHEN_IDLE = False  # True: spin/creep looking for the opponent when nobody's driving
+USE_IMU_CONTACT = False   # True: an IMU jolt also triggers a full-power shove
 EDGE_AGREE = 3            # consecutive sensor readings (~150 ms) that must agree before the
                           # edge flag flips -- a single dip of the car doesn't count as tape
 
@@ -182,10 +182,7 @@ def build_tree(drive):
     def is_out(bb):
         now = bb["now"]
         if bb["tape_since"] and now - bb["tape_since"] >= OUT_TAPE_S and not bb["out"]:
-            bb["out"], bb["out_reason"] = True, f"on the tape for {OUT_TAPE_S:.0f} s"
-        recent = [t for t in bb["retreats"] if now - t <= OUT_WINDOW]
-        if len(recent) >= OUT_RETREATS and not bb["out"]:
-            bb["out"], bb["out_reason"] = True, f"{OUT_RETREATS} edge retreats in {OUT_WINDOW:.0f} s"
+            bb["out"], bb["out_reason"] = True, "pushed onto the tape"
         return bb["out"]
 
     def mourn(bb):
@@ -250,11 +247,12 @@ def build_tree(drive):
 
     def follow_human(bb):
         speed, turn = bb["human"]
-        if speed > 0 and bb["now"] - bb["last_tape"] <= RECENT_TAPE:
-            speed = 0                                   # shared control: no driving into the tape
-            bb["veto"] = bb["now"]
         speed = int(np.clip(speed, -HUMAN_MAX, HUMAN_MAX))
         drive(speed + turn, speed - turn)
+        return bt.SUCCESS
+
+    def idle(bb):
+        drive(0, 0)
         return bt.SUCCESS
 
     def search(bb):
@@ -271,16 +269,15 @@ def build_tree(drive):
             drive(SEARCH_CREEP, SEARCH_CREEP)
         return bt.SUCCESS
 
-    return bt.Selector(
-        "sumo",
-        bt.Sequence("out", bt.Condition("pushed out?", is_out), bt.Action("stop + sad song", mourn)),
-        bt.Sequence("edge", bt.Condition("tape under sensor?", edge_or_retreating),
-                    bt.Action("escape forward" if SENSOR_AT == "back" else "retreat", retreat)),
+    branches = [
+        bt.Sequence("out", bt.Condition("tape under sensor?", is_out), bt.Action("stop + sad song", mourn)),
         bt.Sequence("charge", bt.Condition("opponent in range?", opponent_ahead), bt.Action("charge", charge)),
-        bt.Sequence("attack", bt.Condition("contact (IMU)?", in_contact), bt.Action("shove", shove)),
-        bt.Sequence("teleop", bt.Condition("human command?", human_driving), bt.Action("follow human", follow_human)),
-        bt.Action("search", search),
-    )
+    ]
+    if USE_IMU_CONTACT:
+        branches.append(bt.Sequence("attack", bt.Condition("contact (IMU)?", in_contact), bt.Action("shove", shove)))
+    branches.append(bt.Sequence("teleop", bt.Condition("human command?", human_driving), bt.Action("follow human", follow_human)))
+    branches.append(bt.Action("search", search) if SEARCH_WHEN_IDLE else bt.Action("idle", idle))
+    return bt.Selector("sumo", *branches)
 
 
 # ============================================================================
@@ -350,9 +347,7 @@ def draw_hud(bb, tree_lines, sim):
                 + (f"   gesture {bb['gesture']}" if bb['gesture'] not in (-1, None) else "") + ("   + UNO Q bumper online" if uno else ""),
                 (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, Rd if bb["contact"] else W, 1, cv2.LINE_AA); y += 24
     h = bb["human"] if bb["human"] and now - bb["human_t"] <= KEY_HOLD else None
-    veto = bb.get("veto") and now - bb["veto"] < 0.6
-    cv2.putText(p, f"human: {h if h else 'no input'}" + ("   VETOED: tape ahead" if veto else ""), (16, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, Rd if veto else W, 1, cv2.LINE_AA); y += 24
+    cv2.putText(p, f"human: {h if h else 'no input'}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, W, 1, cv2.LINE_AA); y += 24
     cv2.putText(p, f"wheels: L {bb['cmd'][0]:+4d}  R {bb['cmd'][1]:+4d}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, W, 1, cv2.LINE_AA); y += 30
     # the tree with the active path highlighted
     cv2.putText(p, "tree (top = highest priority)", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, Gy, 1, cv2.LINE_AA); y += 24
@@ -404,7 +399,7 @@ def state_message(bb, classifier):
             "out_reason": bb["out_reason"], "human": bb["human"] if bb["human"] and now - bb["human_t"] <= KEY_HOLD else None,
             "cmd": bb["cmd"], "floor": bb["floor_class"], "knn_conf": round(bb["knn_conf"], 2),
             "knn_counts": classifier.counts(), "sensor_color": bb["sensor_color"], "reflection": bb["reflection"],
-            "jerk": round(bb["jerk"]), "veto": bool(bb.get("veto") and now - bb["veto"] < 0.6)}
+            "jerk": round(bb["jerk"])}
 
 
 def main():
