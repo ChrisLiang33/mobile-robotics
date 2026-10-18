@@ -65,8 +65,9 @@ RANGE_MAX_CM = 200.0      # HC-SR04 readings beyond this are "nothing there"
 ACCEL_HIT = 350           # milli-g away from resting 1 g that counts as a collision
 CONTACT_HOLD = 0.6        # s a collision keeps "contact" true (the shove lasts at least this)
 
-# --- the hub: my Double Motor's card ---------------------------------------
-CARD_COLOR_NAME, CARD_SERIAL = "RED", 994
+# --- my LEGO devices' connection cards ---------------------------------------
+CARD_COLOR_NAME, CARD_SERIAL = "RED", 994           # Double Motor
+COLOR_CARD_NAME, COLOR_CARD_SERIAL = "BLUE", 1392    # Color Sensor
 LEFT_SIGN, RIGHT_SIGN = +1, -1                # motors are mounted mirror-image
 DIRECTION = +1                                # flip if "forward" drives the plow backwards
 
@@ -405,7 +406,10 @@ def main():
             dm.connect(card_serial=CARD_SERIAL, card_color=getattr(le, f"LEGO_COLOR_{CARD_COLOR_NAME}"))
         cs = colorSensor()
         print("Connecting to the Color Sensor...")
-        cs.connect(card_serial=None)
+        if args.any_motor:
+            cs.connect(card_serial=None)
+        else:
+            cs.connect(card_serial=COLOR_CARD_SERIAL, card_color=getattr(le, f"LEGO_COLOR_{COLOR_CARD_NAME}"))
         print("Connected.")
         threading.Thread(target=sensor_loop, args=(cs, classifier, bb, running), daemon=True).start()
         threading.Thread(target=imu_loop, args=(dm, le, bb, running), daemon=True).start()

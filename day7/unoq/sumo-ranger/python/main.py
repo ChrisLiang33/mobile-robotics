@@ -52,6 +52,14 @@ def range_cb(cm):                       # called from the sketch via Bridge.noti
 Bridge.provide("range", range_cb)
 
 
+def diag_cb(code, echo_level):          # once a second from the sketch
+    names = {0: "echo never went high", 1: "echo stuck HIGH", 2: "echo too long (nothing in range)", 3: "ok"}
+    print(f"[ultrasonic] {names.get(int(code), code)}; echo pin idle level = {int(echo_level)}")
+
+
+Bridge.provide("diag", diag_cb)
+
+
 def on_connect(client, userdata, flags, rc):
     print(f"[mqtt] connected rc={rc}; range -> {RANGE_TOPIC}")
     client.subscribe(STATE_TOPIC)

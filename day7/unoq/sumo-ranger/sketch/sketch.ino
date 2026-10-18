@@ -27,15 +27,30 @@ void draw(std::vector<uint8_t> newFrame) {
   memcpy(frame, newFrame.data(), len);
 }
 
+// Timed by hand with micros() instead of pulseIn(), which not every core
+// implements. diag codes: 0 = echo never went high (no sensor response),
+// 1 = echo stuck high (wiring / level problem), 2 = echo too long (nothing in range)
+int lastDiag = -1;
+
 float readCm() {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(3);
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-  unsigned long us = pulseIn(ECHO_PIN, HIGH, ECHO_TIMEOUT_US);
-  if (us == 0) return -1.0f;
-  return us / 58.0f;                             // 343 m/s, there and back
+  unsigned long t0 = micros();
+  if (digitalRead(ECHO_PIN) == HIGH) {            // should be low before the echo starts
+    while (digitalRead(ECHO_PIN) == HIGH) { if (micros() - t0 > ECHO_TIMEOUT_US) { lastDiag = 1; return -1.0f; } }
+  }
+  while (digitalRead(ECHO_PIN) == LOW) {          // wait for the echo pulse to start
+    if (micros() - t0 > ECHO_TIMEOUT_US) { lastDiag = 0; return -1.0f; }
+  }
+  unsigned long start = micros();
+  while (digitalRead(ECHO_PIN) == HIGH) {         // measure it
+    if (micros() - start > ECHO_TIMEOUT_US) { lastDiag = 2; return -1.0f; }
+  }
+  lastDiag = 3;
+  return (micros() - start) / 58.0f;              // 343 m/s, there and back
 }
 
 void setup() {
@@ -55,6 +70,8 @@ void loop() {
     lastPing = millis();
     float cm = readCm();
     Bridge.notify("range", cm);
+    static unsigned long lastDiagMs = 0;
+    if (millis() - lastDiagMs > 1000) { lastDiagMs = millis(); Bridge.notify("diag", lastDiag, (int)digitalRead(ECHO_PIN)); }
   }
   delay(5);
 }
