@@ -24,7 +24,11 @@ Tape vs floor is decided by a K-NEAREST-NEIGHBORS classifier on the Color
 Sensor's readings (knn.py): press f on floor and t on tape a few times each
 to teach it your ring; until then it falls back to the sensor's own "Blue".
 
-Keys: W/S forward/back  A/D turn  SPACE stop  f/t record floor/tape sample
+Starts in MANUAL mode: the motors only follow the keyboard while the HUD
+shows what the tree would do -- test one sensor at a time. Press m to hand
+control to the tree (autonomy ON) for the match.
+
+Keys: m autonomy on/off  W/S forward/back  A/D turn  SPACE stop  f/t record floor/tape
       x referee: declare us out  r reset  c fake contact  e fake edge (--sim)  q quit
 """
 
@@ -108,7 +112,7 @@ def new_blackboard():
         "retreat": None,                                    # ("back"|"turn", until)
         "search": None,                                     # ("spin"|"creep", until, dir)
         "active": "-", "trace": [], "cmd": (0, 0), "now": 0.0,
-        "mourned": False,
+        "mourned": False, "manual": True,
     }
 
 
@@ -310,7 +314,12 @@ def draw_hud(bb, tree_lines, sim):
     W, Y = (255, 255, 255), (0, 220, 255)
     G, Rd, Gy = (0, 200, 0), (0, 0, 230), (130, 130, 130)
     cv2.putText(p, "SUMO  -  behavior tree", (16, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.9, Y, 2, cv2.LINE_AA)
-    cv2.putText(p, f"doing: {bb['active']}", (16, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.8, G if not bb["out"] else Rd, 2, cv2.LINE_AA)
+    if bb["manual"]:
+        cv2.putText(p, "MANUAL  (keys only; m = autonomy ON)", (330, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.6, Y, 2, cv2.LINE_AA)
+        cv2.putText(p, f"tree would: {bb['active']}", (16, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.8, Gy, 2, cv2.LINE_AA)
+    else:
+        cv2.putText(p, "AUTONOMY ON  (m = manual)", (400, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.6, G, 2, cv2.LINE_AA)
+        cv2.putText(p, f"doing: {bb['active']}", (16, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.8, G if not bb["out"] else Rd, 2, cv2.LINE_AA)
     if bb["out"]:
         cv2.putText(p, f"OUT - {bb['out_reason']}   (r to reset)", (16, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.65, Rd, 2, cv2.LINE_AA)
     # sensors
@@ -340,7 +349,7 @@ def draw_hud(bb, tree_lines, sim):
     # keys
     cv2.putText(p, "W/S fwd/back  A/D turn  SPACE stop  f/t teach floor/tape  c fake contact" + ("  e fake edge  o fake opponent" if sim else ""),
                 (16, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.45, Gy, 1, cv2.LINE_AA)
-    cv2.putText(p, "x referee: OUT   r reset   q quit", (16, 544), cv2.FONT_HERSHEY_SIMPLEX, 0.45, Gy, 1, cv2.LINE_AA)
+    cv2.putText(p, "m autonomy on/off   x referee: OUT   r reset   q quit", (16, 544), cv2.FONT_HERSHEY_SIMPLEX, 0.45, Gy, 1, cv2.LINE_AA)
     return p
 
 
@@ -362,6 +371,9 @@ def handle_key(ch, bb, classifier, sim):
         set_edge(bb, not bb["edge"], now)
     elif ch == "o" and sim:                       # fake the ultrasonic: opponent 25 cm ahead for a moment
         bb["range_cm"], bb["range_t"] = (25.0 if not bb["opponent"] else 150.0), now + 1.0
+    elif ch == "m":
+        bb["manual"] = not bb["manual"]
+        print("MANUAL (keys only)" if bb["manual"] else "AUTONOMY ON")
     elif ch == "x":
         bb["out"], bb["out_reason"] = True, "referee"
     elif ch == "r":
@@ -416,6 +428,19 @@ def main():
     motors = Motors(dm, le)
 
     def drive(l, r):
+        if bb["manual"]:
+            bb["tree_cmd"] = (int(l), int(r))      # what the tree wanted, for the HUD only
+            return
+        bb["cmd"] = (int(l), int(r))
+        motors.drive(l, r)
+
+    def manual_drive(bb):
+        """Manual mode: keys straight to the wheels, nothing else. Out still stops."""
+        if bb["out"] or not (bb["human"] and bb["now"] - bb["human_t"] <= KEY_HOLD):
+            l = r = 0
+        else:
+            speed, turn = bb["human"]
+            l, r = speed + turn, speed - turn
         bb["cmd"] = (int(l), int(r))
         motors.drive(l, r)
 
@@ -467,6 +492,8 @@ def main():
             bb["opponent"] = bool(fresh and 2.0 < bb["range_cm"] < CHARGE_CM)
             bb["trace"] = []
             tree.tick(bb)
+            if bb["manual"]:
+                manual_drive(bb)
             n += 1
 
             if bb["out"] and not bb.get("announced"):
@@ -481,7 +508,7 @@ def main():
 
             if headless:
                 if n % TICK_HZ == 0:
-                    print(f"doing {bb['active']:14s} floor {bb['floor_class']:5s} contact {bb['contact']!s:5s} "
+                    print(f"{'MANUAL ' if bb['manual'] else ''}doing {bb['active']:14s} floor {bb['floor_class']:5s} contact {bb['contact']!s:5s} "
                           f"human {bb['human'] if bb['human'] and now - bb['human_t'] <= KEY_HOLD else '-'}  wheels {bb['cmd']}")
                 time.sleep(1.0 / TICK_HZ)
                 if args.frames and n >= args.frames:
