@@ -62,7 +62,7 @@ RESULT_TOPIC = f"ME193/{PLAYER}/sumo/result"  # us -> everyone: who lost
 SENSOR_AT = "back"        # "back": tape behind us -> escape FORWARD; "front": back up, then turn
 
 # --- the opponent, by ultrasonic ---------------------------------------------
-CHARGE_CM = 45.0          # opponent closer than this, straight ahead -> charge at full power
+CHARGE_CM = 20.0          # opponent closer than this, straight ahead -> charge at full power
 RANGE_STALE = 0.5         # s without a range message -> "don't know"
 RANGE_MAX_CM = 200.0      # HC-SR04 readings beyond this are "nothing there"
 

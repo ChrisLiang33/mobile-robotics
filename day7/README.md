@@ -73,7 +73,7 @@ priority:
 ```
 Selector: sumo
   Sequence: out      tape under the rear sensor for 0.3 s? -> stop, play the sad song, publish "lost"
-  Sequence: charge   opponent < 45 cm ahead (ultrasonic)?  -> charge at 100% (the "auto power-up"); A/D angle it ±20
+  Sequence: charge   opponent < 20 cm ahead (ultrasonic)?  -> charge at 100% (the "auto power-up"); A/D angle it ±20
   Sequence: teleop   fresh human command?                  -> drive it, capped at 80%
   Action:   idle                                           -> sit still (SEARCH_WHEN_IDLE=True: spin and creep instead)
 ```
