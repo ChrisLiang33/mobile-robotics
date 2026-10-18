@@ -1,18 +1,17 @@
 """
-Day 7 -- Sumo wrestler: LEGO Double Motor base + Color Sensor + the hub's IMU,
+Day 7 -- Sumo wrestler: LEGO Double Motor base + Color Sensor + UNO Q ultrasonic,
 decided by a BEHAVIOR TREE, with the human in the loop over the keyboard.
 
-    python sumo.py                 # hub + color sensor over Bluetooth, state over MQTT
-    python sumo.py --sim           # no hardware: e = edge, c = contact, watch the tree decide
+    python sumo.py                 # hub + color sensor over Bluetooth, UNO Q range over MQTT
+    python sumo.py --sim           # no hardware: e = edge, o = opponent in range, c = contact
     python sumo.py --any-motor     # don't pin the hub to my card
-    python sumo.py --headless      # on the UNO Q (no window): keys arrive over MQTT from
-                                   # sumo_remote.py on the laptop; state and "lost" go out over MQTT
+    python sumo.py --headless      # no window: keys arrive over MQTT from sumo_remote.py
 
 Sensors feeding the decision (the "sensor fusion"):
-    autonomous  Color Sensor, pointing at the floor   -> edge of the ring (blue tape)
-    autonomous  hub IMU (accelerometer + gesture)     -> contact: we hit, or got hit by, the opponent
-    teleop      keyboard (W/A/S/D)                    -> where the human wants to push
-    optional    a UNO Q bump switch publishing on BUMP_TOPIC also counts as contact
+    autonomous  UNO Q + HC-SR04 ultrasonic on the plow, over MQTT -> opponent ahead, how far
+    autonomous  Color Sensor at the back, pointing at the floor    -> edge of the ring (blue tape)
+    autonomous  hub IMU (accelerometer + gesture)                  -> contact: we're touching them
+    teleop      keyboard (W/A/S/D)                                 -> where the human wants to push
 
 The tree, highest priority first (bt.py):
     1. OUT?        pushed out -> stop and play the sad song
@@ -48,10 +47,19 @@ import knn
 import sounds
 
 PLAYER = "ChrisLiang"
+RANGE_TOPIC = f"ME193/{PLAYER}/sumo/range"    # UNO Q ultrasonic -> us: {"cm": 37.2}  (~10 Hz)
 BUMP_TOPIC = f"ME193/{PLAYER}/sumo/bump"      # optional UNO Q bumper -> us: {"bump": true/false}
 STATE_TOPIC = f"ME193/{PLAYER}/sumo/state"    # us -> the laptop remote + anyone watching (5 Hz)
 TELEOP_TOPIC = f"ME193/{PLAYER}/sumo/teleop"  # laptop remote -> us: {"key": "w"}
 RESULT_TOPIC = f"ME193/{PLAYER}/sumo/result"  # us -> everyone: who lost
+
+# --- the ring edge sensor ----------------------------------------------------
+SENSOR_AT = "back"        # "back": tape behind us -> escape FORWARD; "front": back up, then turn
+
+# --- the opponent, by ultrasonic ---------------------------------------------
+CHARGE_CM = 45.0          # opponent closer than this, straight ahead -> charge at full power
+RANGE_STALE = 0.5         # s without a range message -> "don't know"
+RANGE_MAX_CM = 200.0      # HC-SR04 readings beyond this are "nothing there"
 
 # --- contact from the hub's IMU --------------------------------------------
 ACCEL_HIT = 350           # milli-g away from resting 1 g that counts as a collision
@@ -67,8 +75,9 @@ SHOVE_SPEED = 100
 HUMAN_MAX = 80
 SEARCH_SPIN = 40
 SEARCH_CREEP = 45
-RETREAT_BACK = (-75, 0.55)                    # speed, seconds
-RETREAT_TURN = (60, 0.65)
+RETREAT_BACK = (-75, 0.55)                    # front sensor: speed, seconds backing up
+RETREAT_TURN = (60, 0.65)                     # front sensor: then turning
+ESCAPE_FWD = (90, 0.6)                        # back sensor: drive forward, away from the tape
 
 # --- timing -----------------------------------------------------------------
 TICK_HZ = 20
@@ -92,6 +101,7 @@ def new_blackboard():
         "edge": False, "tape_since": None, "last_tape": -1e9, "floor_class": "?", "knn_conf": 0.0,
         "rgb": (0, 0, 0), "reflection": 0, "sensor_color": "-",
         "contact": False, "last_bump": -1e9, "unoq_seen": -1e9, "jerk": 0.0, "gesture": -1,
+        "range_cm": None, "range_t": -1e9, "opponent": False,
         "human": None, "human_t": -1e9,                     # (speed, turn)
         "out": False, "out_reason": "", "retreats": [],
         "retreat": None,                                    # ("back"|"turn", until)
@@ -178,11 +188,18 @@ def build_tree(drive):
 
     def retreat(bb):
         now = bb["now"]
-        if bb["retreat"] is None:                      # start: remember the event, back up
+        if bb["retreat"] is None:                      # start: remember the event
             bb["retreats"].append(now)
-            bb["retreat"] = ("back", now + RETREAT_BACK[1])
+            first = "fwd" if SENSOR_AT == "back" else "back"
+            bb["retreat"] = (first, now + (ESCAPE_FWD[1] if first == "fwd" else RETREAT_BACK[1]))
             bb["turn_dir"] = -1 if (bb["human"] and bb["human"][1] < 0) else (1 if bb["human"] and bb["human"][1] > 0 else random.choice((-1, 1)))
         phase, until = bb["retreat"]
+        if phase == "fwd":                             # rear sensor saw tape: get away from it
+            if now >= until:
+                bb["retreat"] = None
+                return bt.FAILURE
+            drive(ESCAPE_FWD[0], ESCAPE_FWD[0])
+            return bt.RUNNING
         if phase == "back" and now >= until:            # backing done -> start turning now
             bb["retreat"] = ("turn", now + RETREAT_TURN[1])
             phase, until = bb["retreat"]
@@ -195,6 +212,16 @@ def build_tree(drive):
             s = RETREAT_TURN[0] * bb["turn_dir"]
             drive(s, -s)
         return bt.RUNNING
+
+    def opponent_ahead(bb):
+        return bb["opponent"]
+
+    def charge(bb):
+        bias = 0
+        if bb["human"] and bb["now"] - bb["human_t"] <= KEY_HOLD:
+            bias = int(20 * np.sign(bb["human"][1]))
+        drive(100 - max(0, -bias), 100 - max(0, bias))
+        return bt.SUCCESS
 
     def in_contact(bb):
         return bb["contact"]
@@ -236,7 +263,8 @@ def build_tree(drive):
         "sumo",
         bt.Sequence("out", bt.Condition("pushed out?", is_out), bt.Action("stop + sad song", mourn)),
         bt.Sequence("edge", bt.Condition("tape under sensor?", edge_or_retreating), bt.Action("retreat", retreat)),
-        bt.Sequence("attack", bt.Condition("bumper pressed?", in_contact), bt.Action("shove", shove)),
+        bt.Sequence("charge", bt.Condition("opponent in range?", opponent_ahead), bt.Action("charge", charge)),
+        bt.Sequence("attack", bt.Condition("contact (IMU)?", in_contact), bt.Action("shove", shove)),
         bt.Sequence("teleop", bt.Condition("human command?", human_driving), bt.Action("follow human", follow_human)),
         bt.Action("search", search),
     )
@@ -291,6 +319,10 @@ def draw_hud(bb, tree_lines, sim):
     cv2.putText(p, f"floor: {bb['floor_class']}  (knn {bb['knn_conf']:.0%})   sensor says {bb['sensor_color']}   refl {bb['reflection']}",
                 (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, edge_col, 1, cv2.LINE_AA); y += 24
     uno = now - bb["unoq_seen"] <= UNOQ_STALE
+    rng = bb["range_cm"]
+    fresh = now - bb["range_t"] <= RANGE_STALE
+    cv2.putText(p, f"ultrasonic: {f'{rng:.0f} cm' if (fresh and rng is not None) else 'no reading'}   opponent in range: {'YES' if bb['opponent'] else 'no'} (< {CHARGE_CM:.0f} cm)",
+                (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, Rd if bb["opponent"] else (W if fresh else Gy), 1, cv2.LINE_AA); y += 24
     cv2.putText(p, f"contact: {'YES' if bb['contact'] else 'no'}   hub IMU jerk {bb['jerk']:.0f} mg (hit >= {ACCEL_HIT})"
                 + (f"   gesture {bb['gesture']}" if bb['gesture'] not in (-1, None) else "") + ("   + UNO Q bumper online" if uno else ""),
                 (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, Rd if bb["contact"] else W, 1, cv2.LINE_AA); y += 24
@@ -305,7 +337,7 @@ def draw_hud(bb, tree_lines, sim):
         hot = any(t in line for t in bb["trace"]) and line.strip().split(": ")[-1] in bb["trace"]
         cv2.putText(p, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, G if hot else Gy, 1, cv2.LINE_AA); y += 20
     # keys
-    cv2.putText(p, "W/S fwd/back  A/D turn  SPACE stop  f/t teach floor/tape  c fake contact" + ("  e fake edge" if sim else ""),
+    cv2.putText(p, "W/S fwd/back  A/D turn  SPACE stop  f/t teach floor/tape  c fake contact" + ("  e fake edge  o fake opponent" if sim else ""),
                 (16, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.45, Gy, 1, cv2.LINE_AA)
     cv2.putText(p, "x referee: OUT   r reset   q quit", (16, 544), cv2.FONT_HERSHEY_SIMPLEX, 0.45, Gy, 1, cv2.LINE_AA)
     return p
@@ -327,6 +359,8 @@ def handle_key(ch, bb, classifier, sim):
         bb["last_bump"] = now
     elif ch == "e" and sim:
         set_edge(bb, not bb["edge"], now)
+    elif ch == "o" and sim:                       # fake the ultrasonic: opponent 25 cm ahead for a moment
+        bb["range_cm"], bb["range_t"] = (25.0 if not bb["opponent"] else 150.0), now + 1.0
     elif ch == "x":
         bb["out"], bb["out_reason"] = True, "referee"
     elif ch == "r":
@@ -339,6 +373,7 @@ def handle_key(ch, bb, classifier, sim):
 def state_message(bb, classifier):
     now = bb["now"]
     return {"doing": bb["active"], "edge": bb["edge"], "contact": bb["contact"], "out": bb["out"],
+            "range_cm": bb["range_cm"] if now - bb["range_t"] <= RANGE_STALE else None, "opponent": bb["opponent"],
             "out_reason": bb["out_reason"], "human": bb["human"] if bb["human"] and now - bb["human_t"] <= KEY_HOLD else None,
             "cmd": bb["cmd"], "floor": bb["floor_class"], "knn_conf": round(bb["knn_conf"], 2),
             "knn_counts": classifier.counts(), "sensor_color": bb["sensor_color"], "reflection": bb["reflection"],
@@ -396,6 +431,14 @@ def main():
                 bb["last_bump"] = time.monotonic()
         client.subscribe(BUMP_TOPIC, on_bump)
 
+        def on_range(topic, payload):
+            try:
+                cm = float(json.loads(payload).get("cm"))
+            except (ValueError, TypeError, AttributeError):
+                return
+            bb["range_cm"], bb["range_t"], bb["unoq_seen"] = cm, time.monotonic(), time.monotonic()
+        client.subscribe(RANGE_TOPIC, on_range)
+
         def on_teleop(topic, payload):
             try:
                 ch = json.loads(payload).get("key", "")
@@ -416,6 +459,8 @@ def main():
             now = time.monotonic()
             bb["now"] = now
             bb["contact"] = now - bb["last_bump"] <= CONTACT_STALE
+            fresh = bb["range_cm"] is not None and now - bb["range_t"] <= RANGE_STALE
+            bb["opponent"] = bool(fresh and 2.0 < bb["range_cm"] < CHARGE_CM)
             bb["trace"] = []
             tree.tick(bb)
             n += 1

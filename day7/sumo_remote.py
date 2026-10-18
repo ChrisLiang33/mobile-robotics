@@ -83,7 +83,7 @@ def main():
             if key in (27, ord("q")):
                 break
             ch = arrows.get(key, chr(key) if key != 255 else "")
-            if ch in ("w", "a", "s", "d", " ", "x", "r", "c", "f", "t", "e"):
+            if ch in ("w", "a", "s", "d", " ", "x", "r", "c", "f", "t", "e", "o"):
                 c.publish(TELEOP_TOPIC, json.dumps({"key": ch}))
     finally:
         c.disconnect()

@@ -1,0 +1,5 @@
+name: Sumo Ranger
+description: "HC-SR04 ultrasonic on the plow: publishes the distance to whatever is ahead over MQTT; LED matrix shows range and status"
+ports: []
+bricks: []
+icon: 📡

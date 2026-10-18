@@ -2,29 +2,29 @@
 
 *ME193 — Chris Liang*
 
-A LEGO Double Motor base with a plow, a Color Sensor looking at the floor,
-and the hub's own IMU, driven by a **behavior tree** that runs on the **UNO Q
-riding on the car**. The UNO Q talks Bluetooth to the LEGO hub and sensor,
-publishes the robot's state over MQTT, and announces over MQTT when it has
-lost. The human steers from the laptop with the keyboard — the keys travel
-over MQTT — but the tree has the final say: it will not let you drive onto
-the tape, and it shoves at full power the moment it feels contact. First one
-pushed out of the blue-tape ring loses, and the laptop plays the sad trombone
-when the "lost" message arrives.
+A LEGO Double Motor base with a plow. On the plow, an **HC-SR04 ultrasonic
+sensor read by a UNO Q**, which publishes the distance to whatever is ahead
+over MQTT. At the back, a **Color Sensor looking at the floor** for the blue
+tape. The laptop runs a **behavior tree**: it holds the Bluetooth links to the
+LEGO hub and Color Sensor, listens to the UNO Q over MQTT, and takes the
+human's keyboard input — then decides. The tree has the final say: it charges
+at full power when the ultrasonic sees the opponent in range, it will not let
+you drive onto the tape, and when it's been pushed out it stops, plays the sad
+trombone and announces the loss over MQTT.
 
 ```
- laptop: sumo_remote.py  --keys-->  MQTT  --keys-->  UNO Q: sumo.py --headless  --BLE-->  Double Motor + Color Sensor
-         (HUD, sad song) <--state--       <--state, "ChrisLiang lost"--  (behavior tree, KNN)
+ UNO Q + HC-SR04 on the plow  --MQTT "cm"-->  laptop: sumo.py (behavior tree, KNN, keyboard)  --BLE-->  Double Motor
+                              <--MQTT state--                                                 --BLE-->  Color Sensor (floor)
+                                                 --MQTT-->  ME193/ChrisLiang/sumo/result: "ChrisLiang lost: ..."
 ```
-(`sumo.py` without `--headless` also runs the whole thing on the laptop, as a fallback.)
 
 ## Files
 
 | File | What it is |
 |------|------------|
-| `sumo.py` | the brain: sensors → blackboard → behavior tree → motors; `--headless` on the UNO Q (teleop over MQTT), or with a window on the laptop |
-| `sumo_remote.py` | laptop side: sends key presses to the robot over MQTT, shows its state, plays the sad song on "lost" |
-| `unoq_setup.sh` | one-time setup on the UNO Q: Python environment with the LEGO Bluetooth library, Bluetooth check |
+| `sumo.py` | the brain on the laptop: sensors → blackboard → behavior tree → motors, keyboard teleop, HUD, MQTT |
+| `unoq/sumo-ranger/` | UNO Q App Lab project: reads the HC-SR04, publishes range over MQTT, LED matrix range bar / sad face |
+| `sumo_remote.py`, `unoq_setup.sh` | alternative layout (brain on the UNO Q over Bluetooth, laptop as remote) — not used on game day |
 | `bt.py` | the behavior-tree library (Selector, Sequence, Condition, Action, RUNNING) |
 | `knn.py` | K-nearest-neighbors classifier: Color Sensor reading → "floor" or "tape" |
 | `knn_samples.json` | the readings you taught it (created by pressing `f`/`t` in the HUD) |
@@ -33,26 +33,28 @@ when the "lost" message arrives.
 
 ## Build and setup
 
-- Double Motor base, plow on the front, **Color Sensor on the front with its
-  window facing straight down**, about 1 cm off the floor, ahead of the wheels.
-- Under 1 kg and inside a 30 cm cube — the hub, sensor and a LEGO plow are
-  well within that.
+- Double Motor base, plow on the front, **Color Sensor at the back with its
+  window facing straight down**, about 1 cm off the floor. (`SENSOR_AT =
+  "back"` in `sumo.py`: when the tape appears under it the escape is to drive
+  forward. Mount it at the front instead and set `"front"`: then it backs up
+  and turns.)
+- **UNO Q on the car** with the HC-SR04 on the plow facing forward: `VCC →
+  5V`, `GND → GND`, `TRIG → D7`, `ECHO → D8` through a 1 kΩ / 2 kΩ divider
+  (echo is 5 V, the UNO Q's pins are 3.3 V). Power from a USB power bank.
+- Under 1 kg and inside a 30 cm cube — the hub, sensor, UNO Q and a LEGO plow
+  are well within that.
 
 ```bash
-# on the laptop
 pip install legoeducation opencv-python numpy pyaudio paho-mqtt
-python sumo.py --sim          # no hardware: watch the tree react to fake sensors (e = edge, c = contact)
+python sumo.py --sim          # no hardware: fake the sensors (e = edge, o = opponent in range, c = contact)
 
-# on the UNO Q (once): copy the folder up and run the setup script
-scp -r day7 arduino@<board-ip>:~/sumo && ssh arduino@<board-ip> 'bash ~/sumo/unoq_setup.sh'
-# game day: brain on the board, remote on the laptop
-ssh arduino@<board-ip> '~/sumo/.venv/bin/python ~/sumo/sumo.py --headless'     # (--any-motor to skip my card)
-python sumo_remote.py
+cd unoq && UNOQ_HOST=<board-ip> ./unoq.sh deploy     # put the ranger app on the UNO Q (once)
+python sumo.py                # game day: hub + Color Sensor over Bluetooth, UNO Q over MQTT
 ```
 
-MQTT topics: `ME193/ChrisLiang/sumo/teleop` (laptop → robot, key presses),
-`ME193/ChrisLiang/sumo/state` (robot → laptop, 5×/s), `ME193/ChrisLiang/sumo/result`
-(robot → everyone: `ChrisLiang lost: <reason>`).
+MQTT topics: `ME193/ChrisLiang/sumo/range` (UNO Q → laptop, `{"cm": 37.2}`,
+10×/s), `ME193/ChrisLiang/sumo/state` (laptop → anyone, 5×/s), and
+`ME193/ChrisLiang/sumo/result` (`ChrisLiang lost: <reason>` when it happens).
 
 **Teach it your ring first:** with the robot on plain floor press `f` a few
 times, on the tape press `t` a few times. The HUD shows the KNN's verdict
@@ -70,19 +72,24 @@ priority:
 
 ```
 Selector: sumo
-  Sequence: out      pushed out?          -> stop, play the sad song
-  Sequence: edge     tape under sensor?   -> retreat: back 0.55 s, then turn 0.65 s (overrides the human)
-  Sequence: attack   contact?             -> shove at 100%, human may bias the angle ±25
-  Sequence: teleop   fresh human command? -> obey it, capped at 80%, EXCEPT forward within 0.4 s of tape
-  Action:   search                        -> slow spin 0.9 s / creep forward 0.7 s, repeat
+  Sequence: out      pushed out?             -> stop, play the sad song, publish "lost"
+  Sequence: edge     tape under rear sensor? -> escape forward 0.6 s (overrides the human)
+  Sequence: charge   opponent < 45 cm ahead? -> charge at 100% (the ultrasonic "auto power-up"), human may angle it ±20
+  Sequence: attack   contact (IMU)?          -> shove at 100%, human may angle it ±25
+  Sequence: teleop   fresh human command?    -> obey it, capped at 80%, EXCEPT forward within 0.4 s of tape
+  Action:   search                           -> slow spin 0.9 s / creep forward 0.7 s, repeat
 ```
 
-Two details make it a real tree rather than a list of ifs: the **retreat is a
-RUNNING action** — once started it finishes its back-and-turn even if the tape
-is already behind it, then steps aside so lower branches can act in the same
-tick; and the **"out" rule is derived from sensor history**: on the tape for
-1.5 s straight, or three edge retreats inside 6 s, means we're being pushed
-out and the tree stops the motors itself (the referee key `x` does the same).
+Two details make it a real tree rather than a list of ifs: the **escape is a
+RUNNING action** — once started it finishes its 0.6 s of forward drive even if
+the tape is already gone from under the sensor, then steps aside so lower
+branches can act in the same tick; and the **"out" rule is derived from sensor
+history**: on the tape for 1.5 s straight, or three escapes inside 6 s, means
+we're being pushed out and the tree stops the motors itself (the referee key
+`x` does the same). The ultrasonic branch is the "auto power-up": the human
+drives at up to 80%, but the moment the UNO Q reports the opponent inside 45
+cm, the tree takes over and goes to 100%; a stale reading (no message for
+0.5 s) counts as "don't know", never as "opponent".
 
 The second algorithm from the week's list, **K-nearest-neighbors**, decides
 the "tape under sensor?" condition: each Color Sensor reading becomes a
@@ -93,41 +100,38 @@ floor color don't matter.
 
 ## Q2 — Which sensors does the build use autonomously?
 
-1. **The Color Sensor**, pointed at the floor, read ~20×/s. It feeds the KNN
-   and triggers the retreat and the "out" detection. It acts with no human
-   input and overrides the human.
-2. **The hub's IMU** (accelerometer + its built-in gesture detector). A jolt
+1. **The HC-SR04 ultrasonic on the UNO Q**, facing forward, measured ~16×/s
+   on the microcontroller and published over MQTT 10×/s. Under 45 cm means
+   the opponent is in front of the plow: the tree charges at full power on
+   its own. The UNO Q is the sensor the assignment asks for, talking over MQTT.
+2. **The Color Sensor**, pointed at the floor at the back, read ~20×/s over
+   Bluetooth. It feeds the KNN and triggers the escape and the "out"
+   detection. It acts with no human input and overrides the human.
+3. **The hub's IMU** (accelerometer + its built-in gesture detector). A jolt
    of ≥ 350 milli-g away from gravity, or the hub's own COLLISION gesture,
-   means we just hit or got hit by the opponent; "contact" stays true for
-   0.6 s and triggers the full-power shove.
-
-The UNO Q is the computer that reads both of these over Bluetooth, runs the
-tree, and reports over MQTT. (A bump switch wired to the UNO Q and published
-on `ME193/ChrisLiang/sumo/bump` would count as contact too; the code accepts
-it, but this build doesn't carry one.)
+   means we're in contact with the opponent; "contact" stays true for 0.6 s
+   and triggers the full-power shove even when the ultrasonic can't see them.
 
 ## Q3 — What information can the human give via teleoperation / shared control?
 
 The keyboard gives the wrestler **intent, not control**:
 
-- `W/S/A/D` on the laptop set a wanted speed and turn; each press travels to
-  the robot over MQTT and counts for 0.45 s, so holding a key keeps it alive
-  and letting go stops. This is the lowest priority branch: the robot only
-  follows it when nothing more urgent is true.
+- `W/S/A/D` set a wanted speed and turn. A key press counts for 0.45 s, so
+  holding a key keeps it alive and letting go stops. This is the lowest
+  priority branch: the robot only follows it when nothing more urgent is true.
 - **Vetoed near the edge**: if the human asks for forward within 0.4 s of the
   sensor seeing tape, the speed is zeroed and the HUD shows "VETOED: tape
   ahead". Turning is still allowed.
-- **Biasing the shove**: during contact the robot goes to 100% on its own,
-  but a held `A` or `D` tilts the push by 25% on one wheel — the human picks
-  the angle, the robot picks the power.
-- **Steering the retreat**: the direction the robot turns after backing off
-  the tape is whichever way the human was last steering; with no input it
-  picks at random.
+- **Angling the charge and the shove**: when the ultrasonic or the IMU puts
+  the robot at 100% on its own, a held `A` or `D` tilts the push by 20–25% on
+  one wheel — the human picks the angle, the robot picks the power.
+- **The human cannot stop a charge or an escape**, and cannot be driven out
+  by the human either: forward within 0.4 s of tape is refused.
 - `x` is the referee: declare us out, stop, sad song.
 
 That's the sensor fusion the rubric asks for: the same tick combines the
-floor sensor, the IMU and the human's keys, and the tree decides whose
-opinion wins.
+ultrasonic range, the floor sensor, the IMU and the human's keys, and the
+tree decides whose opinion wins.
 
 ## Q4 — Strengths and weaknesses
 
@@ -140,11 +144,14 @@ opinion wins.
   fooled by a different shade of blue or a glossy floor.
 
 **Logic — weaknesses**
-- It only knows about the opponent when touching it. There's no distance
-  sensor, so "search" is a blind spin-and-creep; a fast opponent can hit us
-  from the side while we're searching.
-- One floor sensor means it knows "tape" but not which side the tape is on;
-  the retreat turns a random (or human-chosen) way.
+- The ultrasonic only looks straight ahead in a ~15° cone, so an opponent
+  beside us is invisible until we're hit (then the IMU takes over). "Search"
+  is a blind spin-and-creep.
+- Ultrasonic readings off a sloped or narrow LEGO opponent can be noisy; one
+  reading under 45 cm is enough to charge, so a false echo wastes a charge.
+- One floor sensor at the back means it detects being pushed out backwards
+  well, but when the human drives forward over the edge the front of the car
+  is already across the line before the sensor sees tape.
 - "Out" is inferred, not measured: being pushed out slowly across the tape
   looks like a long retreat sequence. Three retreats in six seconds or 1.5 s
   on the tape is a heuristic and can fire early in a scrappy match.
@@ -158,9 +165,8 @@ opinion wins.
 
 **Physical — weaknesses**
 - Plastic wheels on a smooth floor: traction, not power, limits the push.
-- The Color Sensor needs to ride at a fixed height; a plow that lifts the
-  front wheels also lifts the sensor and blinds it.
-- Two radio links in the loop: WiFi/MQTT for the human's keys (a broker
-  round trip is ~100 ms, so teleop feels laggy) and Bluetooth for the motors.
-  If Bluetooth drops, the hub keeps its last command — the retreat timers are
-  short on purpose.
+- The Color Sensor needs to ride at a fixed height; a tilted car blinds it.
+- Two radio links in the loop: Bluetooth for the motors and sensor, and
+  WiFi/MQTT through a public broker for the ultrasonic (~100–200 ms). The
+  charge decision therefore lags the real distance; the UNO Q, its power
+  bank and the HC-SR04 also add weight on the front.
