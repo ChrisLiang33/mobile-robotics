@@ -91,11 +91,11 @@ TICK_HZ = 20
 KEY_HOLD = 0.45           # a key press counts as "held" this long (key repeat refreshes it)
 CONTACT_STALE = CONTACT_HOLD
 UNOQ_STALE = 3.0          # s without any UNO Q message -> show it as offline (optional sensor)
-OUT_TAPE_S = 0.3          # tape under the rear sensor this long -> pushed to the edge, out
+OUT_TAPE_S = 0.0          # extra time on tape before calling it (0: the vote below is enough)
 SEARCH_WHEN_IDLE = False  # True: spin/creep looking for the opponent when nobody's driving
 USE_IMU_CONTACT = False   # True: an IMU jolt also triggers a full-power shove
-EDGE_AGREE = 3            # consecutive sensor readings (~150 ms) that must agree before the
-                          # edge flag flips -- a single dip of the car doesn't count as tape
+TAPE_VOTES = (2, 5)       # tape if 2 of the last 5 readings (~250 ms) say tape: fast enough to
+                          # catch a 5 cm strip crossed at full speed, immune to a single flicker
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KNN_PATH = os.path.join(HERE, "knn_samples.json")
@@ -138,12 +138,14 @@ def sensor_loop(cs, classifier, bb, running):
         now = time.monotonic()
         bb["rgb"], bb["reflection"], bb["sensor_color"] = rgb, refl, name
         bb["floor_class"], bb["knn_conf"], bb["_last_x"] = label, conf, x
-        # debounce: the flag only flips after EDGE_AGREE readings in a row agree
+        # vote over the last few readings: catches a fast crossing, ignores a flicker
+        need, window = TAPE_VOTES
         votes = bb.setdefault("_votes", [])
         votes.append(label == "tape")
-        del votes[:-EDGE_AGREE]
-        if len(votes) == EDGE_AGREE and all(v == votes[0] for v in votes):
-            set_edge(bb, votes[0], now)
+        del votes[:-window]
+        set_edge(bb, sum(votes) >= need, now)
+        if label == "tape":
+            bb["tape_count"] = bb.get("tape_count", 0) + 1
         time.sleep(0.05)
 
 
@@ -339,7 +341,9 @@ def draw_hud(bb, tree_lines, sim):
     y = 130
     cv2.putText(p, "sensors", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, Gy, 1, cv2.LINE_AA); y += 26
     edge_col = Rd if bb["edge"] else G
-    cv2.putText(p, f"floor: {bb['floor_class']}  (knn {bb['knn_conf']:.0%}, samples {classifier_counts(bb)})   refl {bb['reflection']}  rgb {tuple(int(v) for v in bb['rgb'])}",
+    ago = now - bb["last_tape"]
+    cv2.putText(p, f"floor: {bb['floor_class']}   sensor says {bb['sensor_color']}   refl {bb['reflection']}   tape readings: {bb.get('tape_count', 0)}"
+                + (f"   last tape {ago:.1f} s ago" if ago < 60 else ""),
                 (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, edge_col, 1, cv2.LINE_AA); y += 24
     uno = now - bb["unoq_seen"] <= UNOQ_STALE
     rng = bb["range_cm"]
