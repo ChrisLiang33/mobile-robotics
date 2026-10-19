@@ -21,9 +21,10 @@ The tree, highest priority first (bt.py):
     3. HUMAN?      fresh keyboard command -> drive it
     4. otherwise   sit still (or search, if SEARCH_WHEN_IDLE)
 
-Tape vs floor is decided by a K-NEAREST-NEIGHBORS classifier on the Color
-Sensor's readings (knn.py): press f on floor and t on tape a few times each
-to teach it your ring; until then it falls back to the sensor's own "Blue".
+Tape is the Color Sensor reporting "Blue" (its own classifier, reliable
+within ~1 cm of clean tape), OR a confident vote from the K-NEAREST-NEIGHBORS
+model (knn.py) if you taught it: press f on floor and t on tape a few times
+each. The KNN is a fallback for tape the sensor won't call Blue.
 
 Starts in MANUAL mode: the motors only follow the keyboard while the HUD
 shows what the tree would do -- test one sensor at a time. Press m to hand
@@ -130,8 +131,10 @@ def sensor_loop(cs, classifier, bb, running):
             continue
         x = knn.features(rgb, refl)
         label, conf = classifier.predict(x)
-        if label is None:                         # untrained: trust the sensor's color name
-            label, conf = ("tape" if name == "Blue" else "floor"), 0.5
+        if name == "Blue":                        # the sensor's own verdict is tape, always
+            label, conf = "tape", 1.0
+        elif label is None or conf < 0.8:         # untrained or unsure KNN: not tape
+            label, conf = "floor", (conf if label else 0.5)
         now = time.monotonic()
         bb["rgb"], bb["reflection"], bb["sensor_color"] = rgb, refl, name
         bb["floor_class"], bb["knn_conf"], bb["_last_x"] = label, conf, x
