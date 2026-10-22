@@ -1,0 +1,5 @@
+name: Gait Wearable
+description: "MPU-6050 on the ankle: streams the IMU over MQTT, classifies standing / walking / running / biking on the board, shows the activity on the LED matrix"
+ports: []
+bricks: []
+icon: 🏃

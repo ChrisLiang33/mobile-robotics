@@ -1,0 +1,15 @@
+# sketch.yaml for UNO Q boards still on the factory software image
+# (Arduino App CLI 0.7, zephyr core 0.52): the bridge's support libraries
+# must be listed explicitly there. unoq.sh deploy installs this file on such
+# boards automatically; current boards use mqtt-minifig-car/sketch/sketch.yaml.
+profiles:
+  default:
+    fqbn: arduino:zephyr:unoq
+    platforms:
+      - platform: arduino:zephyr
+    libraries:
+      - MsgPack (0.4.2)
+      - DebugLog (0.8.4)
+      - ArxContainer (0.7.0)
+      - ArxTypeTraits (0.3.1)
+default_profile: default
