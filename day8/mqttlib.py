@@ -9,7 +9,7 @@ import paho.mqtt.client as mqtt
 
 
 class MQTTClient:
-    def __init__(self, broker="test.mosquitto.org", port=1883, client_id=""):
+    def __init__(self, broker=__import__("os").environ.get("MQTT_BROKER", "broker.hivemq.com"), port=1883, client_id=""):
         self.broker = broker
         self.port = port
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)

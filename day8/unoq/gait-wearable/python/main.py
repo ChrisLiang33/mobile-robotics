@@ -32,7 +32,7 @@ except ImportError:
 PLAYER = os.environ.get("GAIT_PLAYER", "ChrisLiang")
 RAW_TOPIC = f"ME193/{PLAYER}/gait/imu"
 LABEL_TOPIC = f"ME193/{PLAYER}/gait/label"
-BROKER, PORT = "test.mosquitto.org", 1883
+BROKER, PORT = os.environ.get("MQTT_BROKER", "broker.hivemq.com"), 1883
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 _lock = threading.Lock()
@@ -55,12 +55,22 @@ def imu_cb(ax, ay, az, gx, gy, gz):
         _batch.append([round(time.time(), 3)] + [round(v, 4) for v in s])
 
 
-def status_cb(ok):
+def status_cb(ok, bus=-1):
     global _status
+    if _status != int(ok):
+        print("[gait] MPU-6050", f"OK on Wire bus {int(bus)}" if int(ok) else "NOT FOUND on any I2C bus - check SDA/SCL/VCC/GND")
     _status = int(ok)
-    print("[gait] MPU-6050", "OK" if _status else "NOT FOUND - check SDA/SCL/VCC/GND")
 
 
+def i2c_cb(bus, addr):
+    addr = int(addr)
+    if addr > 0:
+        print(f"[i2c] bus {int(bus)}: device at 0x{addr:02x}")
+    else:
+        print(f"[i2c] bus {int(bus)}: scan done, {-addr} device(s)")
+
+
+Bridge.provide("i2c", i2c_cb)
 Bridge.provide("imu", imu_cb)
 Bridge.provide("status", status_cb)
 
