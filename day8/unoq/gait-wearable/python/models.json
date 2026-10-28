@@ -1,0 +1,132 @@
+{
+ "model1": {
+  "axis": "ax",
+  "tree": {
+   "feature": 0,
+   "threshold": 0.695185512304306,
+   "left": {
+    "feature": 0,
+    "threshold": 0.2082119956612587,
+    "left": {
+     "class": "standing",
+     "samples": 66
+    },
+    "right": {
+     "class": "biking",
+     "samples": 93
+    }
+   },
+   "right": {
+    "feature": 0,
+    "threshold": 1.3693209886550903,
+    "left": {
+     "class": "walking",
+     "samples": 89
+    },
+    "right": {
+     "class": "running",
+     "samples": 90
+    }
+   }
+  },
+  "accuracy": 0.7130177514792899
+ },
+ "model2": {
+  "features": [
+   "accel_mag_mean",
+   "accel_mag_std",
+   "accel_mag_range",
+   "gyro_mag_mean",
+   "gyro_mag_std",
+   "gyro_mag_range",
+   "step_freq_hz",
+   "step_amp"
+  ],
+  "tree": {
+   "feature": 5,
+   "threshold": 246.35034942626953,
+   "left": {
+    "feature": 2,
+    "threshold": 0.8468106091022491,
+    "left": {
+     "feature": 1,
+     "threshold": 0.06663837283849716,
+     "left": {
+      "class": "standing",
+      "samples": 70
+     },
+     "right": {
+      "class": "walking",
+      "samples": 7
+     }
+    },
+    "right": {
+     "class": "biking",
+     "samples": 81
+    }
+   },
+   "right": {
+    "feature": 0,
+    "threshold": 1.1683791279792786,
+    "left": {
+     "feature": 6,
+     "threshold": 1.75,
+     "left": {
+      "feature": 4,
+      "threshold": 70.14878845214844,
+      "left": {
+       "class": "walking",
+       "samples": 5
+      },
+      "right": {
+       "class": "walking",
+       "samples": 57
+      }
+     },
+     "right": {
+      "feature": 1,
+      "threshold": 0.2652420848608017,
+      "left": {
+       "class": "walking",
+       "samples": 19
+      },
+      "right": {
+       "class": "running",
+       "samples": 19
+      }
+     }
+    },
+    "right": {
+     "feature": 6,
+     "threshold": 1.75,
+     "left": {
+      "feature": 0,
+      "threshold": 1.233116328716278,
+      "left": {
+       "class": "walking",
+       "samples": 12
+      },
+      "right": {
+       "class": "running",
+       "samples": 10
+      }
+     },
+     "right": {
+      "class": "running",
+      "samples": 58
+     }
+    }
+   }
+  },
+  "accuracy": 0.8461538461538461
+ },
+ "classes": [
+  "standing",
+  "walking",
+  "running",
+  "biking"
+ ],
+ "window_s": 2.0,
+ "sample_hz": 50,
+ "cv": "leave-one-session-out"
+}

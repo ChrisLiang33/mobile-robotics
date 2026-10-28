@@ -5,7 +5,7 @@ Step 2 -- train the two gait models from data/gait.csv and export them.
 
 Model 1: the peak |acceleration| on ONE axis per 2 s window -> a tiny decision
          tree (depth 2 = up to three thresholds). One number in, class out.
-Model 2: 29 features from all six IMU channels -> a decision tree (depth 4).
+Model 2: 8 magnitude features from all six IMU channels -> a decision tree (depth 4).
 
 Both are tested with leave-one-session-out cross-validation (train on the
 other recordings, test on each one in turn), which is the honest number

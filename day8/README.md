@@ -6,11 +6,13 @@ An ankle-worn UNO Q with an MPU-6050 six-axis IMU that tells **standing,
 walking, running and biking** apart, with two models that use no neural nets:
 
 - **Model 1** looks at one number: the **peak acceleration along one axis**
-  (vertical, `az`) in a 2-second window, and splits it with two or three
-  learned thresholds (a depth-2 decision tree).
-- **Model 2** uses **all six IMU outputs**: 29 features per window (mean, std,
-  min, max of each axis, the spread and dominant frequency of the acceleration
-  magnitude, gyro energy) into a depth-4 decision tree.
+  (`ax`) in a 2-second window, measured from the window's mean so gravity
+  drops out, and splits it with three learned thresholds (a depth-2
+  decision tree).
+- **Model 2** uses **all six IMU outputs**, combined into the magnitudes of
+  the accel and gyro vectors: 8 features per window (mean, std, range of
+  each magnitude, plus step frequency and its strength) into a depth-4
+  decision tree.
 
 The wearable classifies on the board every half second and shows the activity
 as an icon on its LED matrix; the laptop shows both models side by side.
@@ -49,8 +51,8 @@ python live.py                                        # 5. the demo
 
 Every 20 ms the microcontroller reads the IMU and hands the sample to the
 Linux side. There, the last two seconds are kept in a buffer; every half
-second the buffer becomes one window. Model 1 takes the window's peak |az|
-and walks two threshold tests. Model 2 computes the 29 features and walks
+second the buffer becomes one window. Model 1 takes the window's peak |ax − mean|
+and walks two threshold tests. Model 2 computes the 8 features and walks
 the bigger tree. Both verdicts go out over MQTT; model 2's becomes the icon.
 The trees are trained on the laptop with scikit-learn from the recorded
 data, then exported as plain thresholds (`models.json`) so the board needs
@@ -58,11 +60,25 @@ only numpy.
 
 ## Which model works better, and why
 
-*(Fill in from `train.py`'s numbers after recording.)* Expect model 1 to
-separate standing / walking / running well — those differ mostly in how hard
-the foot hits the ground — and to confuse **biking** with walking, because
-pedaling has gentle vertical acceleration but a lot of rotation. Model 2 sees
-the gyro and the frequency, which is exactly what tells biking apart.
+Tested honestly: train on one recording session, test on the other
+(leave-one-session-out, 338 two-second windows).
+
+| | Accuracy | Main confusion |
+|---|---|---|
+| Model 1 — peak `ax` only | **71%** | walking ↔ running |
+| Model 2 — all six channels | **85%** | some running → walking |
+
+**Model 2 wins.** One peak number is a single "how hard did the foot move"
+reading: standing is obvious, but a brisk walk and an easy jog land on
+overlapping peaks. Model 2 also sees *rotation* (the gyro) and *rhythm*
+(step frequency): pedaling is a smooth, steady circle, running is fast
+sharp impacts.
+
+Lesson from the data: the first version of model 2 used per-axis features
+and scored **99%** when tested on the same recording but **70%** on a new
+one, because the strap sat slightly differently each time and the tree
+had learned the board's tilt. Switching to orientation-free magnitudes
+(and removing gravity from model 1's peak) fixed that: 85% / 71%.
 
 ## Reflection questions
 
